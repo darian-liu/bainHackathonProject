@@ -1,14 +1,20 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional
 
 from app.services.document_source import get_document_source
-from app.services.document_parser import DocumentParser
-from app.services.vector_store import VectorStore
+from app.services.vector_store import get_vector_store
+from app.services.ingestion_service import ingest_documents
 from app.agents.camel_agent import CamelRAGAgent
 from app.agents.simple_agent import SimpleChatAgent
 from app.services.event_bus import event_bus
 from app.core.config import settings
+
+# Import limiter from main app
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(prefix="/data-room", tags=["data-room"])
 
@@ -27,6 +33,8 @@ class ChatResponse(BaseModel):
     sources: List[dict]
 
 
+# TODO: [SECURITY] Add authentication middleware before production deployment
+# See: https://fastapi.tiangolo.com/tutorial/security/
 @router.get("/folders")
 async def list_folders(parent_id: Optional[str] = None):
     """List folders from document source."""
@@ -35,6 +43,8 @@ async def list_folders(parent_id: Optional[str] = None):
     return {"folders": [f.model_dump() for f in folders]}
 
 
+# TODO: [SECURITY] Add authentication middleware before production deployment
+# See: https://fastapi.tiangolo.com/tutorial/security/
 @router.get("/folders/{folder_id}/files")
 async def list_files(folder_id: str):
     """List files in a folder."""
@@ -43,106 +53,70 @@ async def list_files(folder_id: str):
     return {"files": [f.model_dump() for f in files]}
 
 
+# TODO: [SECURITY] Add authentication middleware before production deployment
+# See: https://fastapi.tiangolo.com/tutorial/security/
 @router.post("/ingest")
-async def ingest_folder(request: IngestRequest):
+@limiter.limit("10/minute")
+async def ingest_folder(request: Request, body: IngestRequest):
     """Ingest all documents from a folder into the vector store."""
     source = get_document_source()
-    parser = DocumentParser()
-    vector_store = VectorStore()
-    
-    files = await source.list_files(request.folder_id)
-    results = []
-    
-    for file in files:
-        try:
-            # Check if file type is supported
-            if not any(file.name.lower().endswith(ext) for ext in ['.pdf', '.docx', '.pptx']):
-                results.append({
-                    "file": file.name, 
-                    "status": "skipped", 
-                    "reason": "Unsupported file type"
-                })
-                continue
-            
-            content, filename = await source.download_file(file.id)
-            text = parser.parse(content, filename)
-            chunks = parser.chunk(text)
-            
-            if not chunks:
-                results.append({
-                    "file": filename, 
-                    "status": "skipped", 
-                    "reason": "No text extracted"
-                })
-                continue
-            
-            ids = [f"{file.id}_chunk_{i}" for i in range(len(chunks))]
-            metadata = [
-                {
-                    "file_id": file.id, 
-                    "filename": filename, 
-                    "chunk_index": i,
-                    "folder_id": request.folder_id
-                } 
-                for i in range(len(chunks))
-            ]
-            
-            vector_store.add_documents(chunks, metadata, ids)
-            results.append({
-                "file": filename, 
-                "status": "success", 
-                "chunks": len(chunks)
-            })
-            
-        except Exception as e:
-            results.append({
-                "file": file.name, 
-                "status": "error", 
-                "error": str(e)
-            })
-    
-    return {"results": results}
+    results = await ingest_documents(source, body.folder_id)
+
+    return {
+        "results": [
+            {
+                "file": r.file,
+                "status": r.status,
+                "chunks": r.chunks,
+                "reason": r.reason,
+                "error": r.error,
+            }
+            for r in results
+        ]
+    }
 
 
+# TODO: [SECURITY] Add authentication middleware before production deployment
+# See: https://fastapi.tiangolo.com/tutorial/security/
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@limiter.limit("20/minute")
+async def chat(request: Request, body: ChatRequest):
     """Chat with the ingested documents using RAG."""
-    vector_store = VectorStore()
-    
+    vector_store = get_vector_store()
+
     # Use CAMEL agent by default, fall back to simple agent if configured
     use_simple = settings.use_simple_agent
     agent = SimpleChatAgent() if use_simple else CamelRAGAgent()
-    
+
     # Search for relevant context
-    search_results = vector_store.search(request.message, n_results=5)
-    
+    search_results = vector_store.search(body.message, n_results=5)
+
     if not search_results:
         return ChatResponse(
             response="I don't have any documents to search. Please ingest some documents first.",
-            sources=[]
+            sources=[],
         )
-    
+
     context = [r["text"] for r in search_results]
     sources = [r["metadata"] for r in search_results]
-    
+
     # Collect response
     response_chunks = []
-    
+
     async def emit_event(event):
         await event_bus.broadcast(event.model_dump())
-    
-    async for chunk in agent.chat(request.message, context, emit_event):
+
+    async for chunk in agent.chat(body.message, context, emit_event):
         response_chunks.append(chunk)
-    
-    return ChatResponse(
-        response="".join(response_chunks),
-        sources=sources
-    )
+
+    return ChatResponse(response="".join(response_chunks), sources=sources)
 
 
+# TODO: [SECURITY] Add authentication middleware before production deployment
+# See: https://fastapi.tiangolo.com/tutorial/security/
 @router.delete("/documents")
 async def clear_documents():
     """Clear all ingested documents."""
-    vector_store = VectorStore()
+    vector_store = get_vector_store()
     vector_store.clear()
     return {"status": "cleared"}

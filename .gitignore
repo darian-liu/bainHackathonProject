@@ -19,6 +19,9 @@ build/
 .env.local
 .env.*.local
 
+# Settings file (contains API keys)
+settings.json
+
 # IDE
 .idea/
 .vscode/

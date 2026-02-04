@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
-interface UseWebSocketOptions {
+interface UseWebSocketOptions<T = unknown> {
   url: string
-  onMessage?: (data: unknown) => void
+  onMessage?: (data: T) => void
   onOpen?: () => void
   onClose?: () => void
   onError?: (error: Event) => void
@@ -10,7 +10,7 @@ interface UseWebSocketOptions {
   reconnectInterval?: number
 }
 
-export function useWebSocket({
+export function useWebSocket<T = unknown>({
   url,
   onMessage,
   onOpen,
@@ -18,10 +18,10 @@ export function useWebSocket({
   onError,
   reconnect = true,
   reconnectInterval = 3000,
-}: UseWebSocketOptions) {
+}: UseWebSocketOptions<T>) {
   const wsRef = useRef<WebSocket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
 
   const connect = useCallback(() => {
     try {
@@ -36,7 +36,7 @@ export function useWebSocket({
       ws.onclose = () => {
         setIsConnected(false)
         onClose?.()
-        
+
         if (reconnect) {
           reconnectTimeoutRef.current = setTimeout(() => {
             connect()
@@ -50,10 +50,10 @@ export function useWebSocket({
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data)
+          const data = JSON.parse(event.data) as T
           onMessage?.(data)
         } catch {
-          onMessage?.(event.data)
+          onMessage?.(event.data as T)
         }
       }
     } catch (error) {
@@ -74,7 +74,7 @@ export function useWebSocket({
     }
   }, [connect])
 
-  const send = useCallback((data: unknown) => {
+  const send = useCallback(<S = unknown>(data: S) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(typeof data === 'string' ? data : JSON.stringify(data))
     }

@@ -44,7 +44,7 @@ export function SourcePanel({ sources }: SourcePanelProps) {
                 <span className="truncate">{filename}</span>
               </div>
               <div className="pl-6 space-y-1">
-                {fileSources.map((source, index) => (
+                {fileSources.map((source) => (
                   <div
                     key={`${source.file_id}-${source.chunk_index}`}
                     className="text-xs text-muted-foreground"

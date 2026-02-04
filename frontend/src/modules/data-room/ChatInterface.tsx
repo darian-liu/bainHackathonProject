@@ -22,7 +22,7 @@ export function ChatInterface() {
   } = useChatStore()
 
   const chatMutation = useMutation({
-    mutationFn: dataRoomApi.chat,
+    mutationFn: (message: string) => dataRoomApi.chat(message),
     onMutate: () => {
       setLoading(true)
     },

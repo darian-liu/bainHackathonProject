@@ -2,6 +2,11 @@ import type { Folder, File, IngestResult, ChatResponse } from '@/types'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
+interface ApiError {
+  message: string
+  status: number
+}
+
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${url}`, {
     ...options,
@@ -10,19 +15,23 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   })
-  
+
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(error || `HTTP ${response.status}`)
+    const errorText = await response.text()
+    const error: ApiError = {
+      message: errorText || `HTTP ${response.status}`,
+      status: response.status,
+    }
+    throw error
   }
-  
-  return response.json()
+
+  return response.json() as Promise<T>
 }
 
 // Data Room API
 export const dataRoomApi = {
   listFolders: async (parentId?: string): Promise<Folder[]> => {
-    const url = parentId 
+    const url = parentId
       ? `/api/data-room/folders?parent_id=${parentId}`
       : '/api/data-room/folders'
     const data = await fetchJSON<{ folders: Folder[] }>(url)
@@ -55,8 +64,44 @@ export const dataRoomApi = {
   },
 
   clearDocuments: async (): Promise<void> => {
-    await fetchJSON('/api/data-room/documents', {
+    await fetchJSON<{ status: string }>('/api/data-room/documents', {
       method: 'DELETE',
+    })
+  },
+}
+
+// Settings types
+export interface SettingsData {
+  document_source_mode: string
+  openai_api_key: string
+  graph_client_id: string
+  graph_client_secret: string
+  graph_tenant_id: string
+  sharepoint_site_id: string
+}
+
+export interface TestConnectionResult {
+  openai: boolean
+  sharepoint: boolean | null
+  errors: Record<string, string>
+}
+
+// Settings API
+export const settingsApi = {
+  getSettings: async (): Promise<SettingsData> => {
+    return fetchJSON<SettingsData>('/api/settings')
+  },
+
+  updateSettings: async (settings: Partial<SettingsData>): Promise<SettingsData> => {
+    return fetchJSON<SettingsData>('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    })
+  },
+
+  testConnections: async (): Promise<TestConnectionResult> => {
+    return fetchJSON<TestConnectionResult>('/api/settings/test', {
+      method: 'POST',
     })
   },
 }
@@ -64,7 +109,7 @@ export const dataRoomApi = {
 // Health check
 export const healthCheck = async (): Promise<boolean> => {
   try {
-    await fetchJSON('/health')
+    await fetchJSON<{ status: string }>('/health')
     return true
   } catch {
     return false

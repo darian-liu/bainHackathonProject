@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Folder, FolderOpen, FileText, Loader2, Check, X, Upload } from 'lucide-react'
+import { Folder, FolderOpen, FileText, Loader2, Upload } from 'lucide-react'
 import { dataRoomApi } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import { IngestResults } from './IngestResults'
 import type { Folder as FolderType, File as FileType, IngestResult } from '@/types'
 
 interface FolderPickerProps {
@@ -30,7 +31,8 @@ export function FolderPicker({
   // Fetch files for selected folder
   const { data: files, isLoading: loadingFiles } = useQuery({
     queryKey: ['files', selectedFolderId],
-    queryFn: () => selectedFolderId ? dataRoomApi.listFiles(selectedFolderId) : Promise.resolve([]),
+    queryFn: () =>
+      selectedFolderId ? dataRoomApi.listFiles(selectedFolderId) : Promise.resolve([]),
     enabled: !!selectedFolderId,
   })
 
@@ -59,30 +61,14 @@ export function FolderPicker({
     }
   }
 
-  const handleContinue = () => {
-    onIngested()
-  }
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'success':
-        return <Check className="w-4 h-4 text-green-500" />
-      case 'skipped':
-        return <X className="w-4 h-4 text-yellow-500" />
-      case 'error':
-        return <X className="w-4 h-4 text-red-500" />
-      default:
-        return null
-    }
-  }
-
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <Card>
         <CardHeader>
           <CardTitle>Select a Folder to Ingest</CardTitle>
           <CardDescription>
-            Choose a folder containing documents you want to chat with. Supported formats: PDF, DOCX, PPTX
+            Choose a folder containing documents you want to chat with. Supported formats:
+            PDF, DOCX, PPTX
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -110,7 +96,7 @@ export function FolderPicker({
                       )}
                       <span className="font-medium">{folder.name}</span>
                     </button>
-                    
+
                     {/* Files in folder */}
                     {expandedFolders.has(folder.id) && selectedFolderId === folder.id && (
                       <div className="bg-slate-50 px-4 py-2">
@@ -135,7 +121,9 @@ export function FolderPicker({
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground py-2">No files in this folder</p>
+                          <p className="text-sm text-muted-foreground py-2">
+                            No files in this folder
+                          </p>
                         )}
                       </div>
                     )}
@@ -166,38 +154,7 @@ export function FolderPicker({
 
               {/* Ingest results */}
               {ingestResults && (
-                <div className="space-y-3">
-                  <h4 className="font-medium">Ingestion Results</h4>
-                  <div className="border rounded-lg divide-y">
-                    {ingestResults.map((result, index) => (
-                      <div
-                        key={index}
-                        className="flex items-center gap-3 px-4 py-2"
-                      >
-                        {getStatusIcon(result.status)}
-                        <span className="text-sm">{result.file}</span>
-                        {result.chunks && (
-                          <span className="text-xs text-muted-foreground ml-auto">
-                            {result.chunks} chunks
-                          </span>
-                        )}
-                        {result.reason && (
-                          <span className="text-xs text-muted-foreground ml-auto">
-                            {result.reason}
-                          </span>
-                        )}
-                        {result.error && (
-                          <span className="text-xs text-red-500 ml-auto">
-                            {result.error}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  <Button onClick={handleContinue} className="w-full">
-                    Start Chatting
-                  </Button>
-                </div>
+                <IngestResults results={ingestResults} onContinue={onIngested} />
               )}
             </div>
           ) : (
