@@ -9,6 +9,11 @@ import type {
   EmailExtractionResult,
   DedupeCandidate,
   ExpertSource,
+  ScreenerConfig,
+  AutoIngestResult,
+  IngestionLog,
+  ExpertWithDetails,
+  AutoScanResult,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -27,6 +32,7 @@ export const expertNetworksApi = {
     name: string
     hypothesisText: string
     networks?: string[]
+    screenerConfig?: ScreenerConfig
   }): Promise<Project> => {
     const res = await fetch(`${API_BASE}/api/expert-networks/projects`, {
       method: 'POST',
@@ -42,6 +48,22 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/projects/${projectId}`
     )
     if (!res.ok) throw new Error('Failed to fetch project')
+    return res.json()
+  },
+
+  updateScreenerConfig: async (
+    projectId: string,
+    screenerConfig: ScreenerConfig
+  ): Promise<Project> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/screener-config`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ screenerConfig }),
+      }
+    )
+    if (!res.ok) throw new Error('Failed to update screener config')
     return res.json()
   },
 
@@ -66,7 +88,7 @@ export const expertNetworksApi = {
     return res.json()
   },
 
-  // Commit experts
+  // Commit experts (legacy manual flow)
   commitExperts: async (
     projectId: string,
     emailId: string,
@@ -83,6 +105,141 @@ export const expertNetworksApi = {
     if (!res.ok) {
       const error = await res.json()
       throw new Error(error.detail || 'Commit failed')
+    }
+    return res.json()
+  },
+
+  // Auto-ingest (new streamlined flow)
+  autoIngest: async (
+    projectId: string,
+    emailText: string,
+    network?: string,
+    autoMergeThreshold: number = 0.85
+  ): Promise<AutoIngestResult> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/auto-ingest`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailText, network, autoMergeThreshold }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Auto-ingest failed')
+    }
+    return res.json()
+  },
+
+  // NOTE: undoIngestion and redoIngestion REMOVED - they were fundamentally broken
+  // Users should use explicit delete instead
+
+  // Get latest ingestion log
+  getLatestIngestionLog: async (
+    projectId: string
+  ): Promise<{ log: IngestionLog | null }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/latest`
+    )
+    if (!res.ok) throw new Error('Failed to fetch ingestion log')
+    return res.json()
+  },
+
+  // Get latest scan run
+  getLatestScanRun: async (
+    projectId: string
+  ): Promise<{ scanRun: import('./types').ScanRun | null }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs/latest`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan run')
+    return res.json()
+  },
+
+  // List scan runs
+  listScanRuns: async (
+    projectId: string,
+    limit: number = 10
+  ): Promise<{ scanRuns: import('./types').ScanRun[] }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs?limit=${limit}`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan runs')
+    return res.json()
+  },
+
+  // Screen expert
+  screenExpert: async (
+    expertId: string,
+    projectId: string
+  ): Promise<{
+    grade: string
+    score: number
+    rationale: string
+    confidence: string
+    missingInfo: string[] | null
+    suggestedQuestions: string[] | null
+  }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/experts/${expertId}/screen`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Screening failed')
+    }
+    return res.json()
+  },
+
+  // Auto-scan Outlook inbox
+  autoScanInbox: async (
+    projectId: string,
+    maxEmails: number = 50
+  ): Promise<AutoScanResult> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/auto-scan-inbox`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxEmails }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Auto-scan failed')
+    }
+    return res.json()
+  },
+
+  // Screen all experts in project
+  screenAllExperts: async (
+    projectId: string,
+    force: boolean = false
+  ): Promise<{
+    screened: number
+    failed: number
+    skipped: number
+    results: Array<{
+      expertId: string
+      expertName: string
+      grade?: string
+      score?: number
+      success: boolean
+      error?: string
+    }>
+  }> => {
+    const url = new URL(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/screen-all`
+    )
+    if (force) url.searchParams.set('force', 'true')
+    const res = await fetch(url.toString(), { method: 'POST' })
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Batch screening failed')
     }
     return res.json()
   },
@@ -122,6 +279,34 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/experts/${expertId}/sources`
     )
     if (!res.ok) throw new Error('Failed to fetch expert sources')
+    return res.json()
+  },
+
+  // Bulk delete experts
+  bulkDeleteExperts: async (
+    projectId: string,
+    expertIds: string[]
+  ): Promise<{ success: boolean; deletedCount: number; failedCount: number }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/experts/bulk-delete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expertIds }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Bulk delete failed')
+    }
+    return res.json()
+  },
+
+  getExpertDetails: async (expertId: string): Promise<ExpertWithDetails> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/experts/${expertId}/details`
+    )
+    if (!res.ok) throw new Error('Failed to fetch expert details')
     return res.json()
   },
 
@@ -273,11 +458,141 @@ export function useCommitExperts() {
   })
 }
 
+export function useAutoIngest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      emailText,
+      network,
+      autoMergeThreshold,
+    }: {
+      projectId: string
+      emailText: string
+      network?: string
+      autoMergeThreshold?: number
+    }) => expertNetworksApi.autoIngest(projectId, emailText, network, autoMergeThreshold),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['experts', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['duplicates', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['ingestion-log', variables.projectId],
+      })
+    },
+  })
+}
+
+// NOTE: useUndoIngestion and useRedoIngestion REMOVED - they were fundamentally broken
+// Users should use explicit delete instead
+
+export function useBulkDeleteExperts() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      expertIds,
+    }: {
+      projectId: string
+      expertIds: string[]
+    }) => expertNetworksApi.bulkDeleteExperts(projectId, expertIds),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['experts', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useLatestIngestionLog(projectId: string) {
+  return useQuery({
+    queryKey: ['ingestion-log', projectId],
+    queryFn: () => expertNetworksApi.getLatestIngestionLog(projectId),
+    enabled: !!projectId,
+  })
+}
+
+export function useLatestScanRun(projectId: string) {
+  return useQuery({
+    queryKey: ['scan-run', projectId],
+    queryFn: () => expertNetworksApi.getLatestScanRun(projectId),
+    enabled: !!projectId,
+  })
+}
+
+export function useScanRuns(projectId: string, limit: number = 10) {
+  return useQuery({
+    queryKey: ['scan-runs', projectId, limit],
+    queryFn: () => expertNetworksApi.listScanRuns(projectId, limit),
+    enabled: !!projectId,
+  })
+}
+
+export function useUpdateScreenerConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      screenerConfig,
+    }: {
+      projectId: string
+      screenerConfig: import('./types').ScreenerConfig
+    }) => expertNetworksApi.updateScreenerConfig(projectId, screenerConfig),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['expert-project', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useScreenExpert() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ expertId, projectId }: { expertId: string; projectId: string }) =>
+      expertNetworksApi.screenExpert(expertId, projectId),
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+    },
+  })
+}
+
+export function useScreenAllExperts() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, force }: { projectId: string; force?: boolean }) =>
+      expertNetworksApi.screenAllExperts(projectId, force),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+    },
+  })
+}
+
+export function useAutoScanInbox() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, maxEmails }: { projectId: string; maxEmails?: number }) =>
+      expertNetworksApi.autoScanInbox(projectId, maxEmails),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['ingestion-log', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['scan-run', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['scan-runs', variables.projectId] })
+    },
+  })
+}
+
 export function useExperts(projectId: string, status?: string) {
   return useQuery({
     queryKey: ['experts', projectId, status],
     queryFn: () => expertNetworksApi.listExperts(projectId, status),
     enabled: !!projectId,
+    staleTime: 0, // Always refetch to ensure fresh data, preventing stale cross-project contamination
   })
 }
 
@@ -290,10 +605,11 @@ export function useUpdateExpert() {
     }: {
       expertId: string
       updates: Partial<Expert>
+      projectId: string
     }) => expertNetworksApi.updateExpert(expertId, updates),
     onSuccess: (_, variables) => {
-      // Invalidate all expert queries to refresh the list
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -302,6 +618,14 @@ export function useExpertSources(expertId: string) {
   return useQuery({
     queryKey: ['expert-sources', expertId],
     queryFn: () => expertNetworksApi.getExpertSources(expertId),
+    enabled: !!expertId,
+  })
+}
+
+export function useExpertDetails(expertId: string | null) {
+  return useQuery({
+    queryKey: ['expert-details', expertId],
+    queryFn: () => expertNetworksApi.getExpertDetails(expertId!),
     enabled: !!expertId,
   })
 }
@@ -318,8 +642,9 @@ export function useRecommendExpert() {
       projectId: string
       includeDocumentContext?: boolean
     }) => expertNetworksApi.recommendExpert(expertId, projectId, includeDocumentContext),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -335,11 +660,12 @@ export function useDuplicates(projectId: string, status?: string) {
 export function useMergeDuplicates() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (candidateId: string) =>
+    mutationFn: ({ candidateId }: { candidateId: string; projectId: string }) =>
       expertNetworksApi.mergeDuplicates(candidateId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['duplicates'] })
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -347,9 +673,11 @@ export function useMergeDuplicates() {
 export function useMarkNotSame() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (candidateId: string) => expertNetworksApi.markNotSame(candidateId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['duplicates'] })
+    mutationFn: ({ candidateId }: { candidateId: string; projectId: string }) =>
+      expertNetworksApi.markNotSame(candidateId),
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
     },
   })
 }

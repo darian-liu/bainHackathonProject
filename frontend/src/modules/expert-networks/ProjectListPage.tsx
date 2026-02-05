@@ -51,7 +51,7 @@ export function ProjectListPage() {
         <div>
           <h1 className="text-3xl font-bold">Expert Networks</h1>
           <p className="text-gray-600 mt-1">
-            Manage expert calls for due diligence projects
+            AI-powered expert screening and consolidation for diligence teams
           </p>
         </div>
 
@@ -66,7 +66,7 @@ export function ProjectListPage() {
             <DialogHeader>
               <DialogTitle>Create New Project</DialogTitle>
               <DialogDescription>
-                Create a new due diligence project to track expert calls
+                Create a new project to consolidate expert network emails and run AI screening
               </DialogDescription>
             </DialogHeader>
 
@@ -84,10 +84,10 @@ export function ProjectListPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="hypothesis">Hypothesis / Focus</Label>
+                <Label htmlFor="hypothesis">Project Focus / Hypothesis</Label>
                 <Textarea
                   id="hypothesis"
-                  placeholder="Describe the project hypothesis for AI recommendations..."
+                  placeholder="Describe the project focus for AI screening (e.g., 'Seeking experts with direct experience in retail supply chain optimization')"
                   value={formData.hypothesisText}
                   onChange={(e) =>
                     setFormData({ ...formData, hypothesisText: e.target.value })

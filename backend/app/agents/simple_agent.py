@@ -2,17 +2,23 @@ from openai import OpenAI
 from app.agents.base import ChatAgent, EventCallback
 from app.agents.prompts import build_context_string, SIMPLE_SYSTEM_PROMPT
 from app.core.events import AgentEvent, EventType
+from app.core.config import settings
 from typing import AsyncIterator, List
 import uuid
-import os
 
 
 class SimpleChatAgent(ChatAgent):
     """Fallback agent using direct OpenAI API calls."""
 
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = "gpt-4o-mini"
+        # Configure client with optional Portkey base URL
+        client_config = {"api_key": settings.openai_api_key}
+        if settings.openai_base_url:
+            client_config["base_url"] = settings.openai_base_url
+        self.client = OpenAI(**client_config)
+        
+        # Use model from settings (Bain uses @personal-openai/ prefix with Portkey)
+        self.model = settings.openai_model or "gpt-4o-mini"
 
     async def chat(
         self, message: str, context: List[str], on_event: EventCallback

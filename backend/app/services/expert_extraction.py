@@ -1,15 +1,17 @@
 """AI-powered expert extraction service using OpenAI."""
 
 import json
-from typing import Tuple
-from openai import OpenAI
+from typing import Tuple, List
+from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.expert_extraction import (
     EmailExtractionResult,
     AIRecommendation,
+    AIScreeningResult,
     AIScreeningResultWithDocs,
     DocumentRelevance,
-    ExtractedExpert
+    ExtractedExpert,
+    EmailUpdateAnalysis,
 )
 
 
@@ -80,6 +82,57 @@ CRITICAL RULES:
 4. Keep rationale to 1-2 concise sentences."""
 
 
+SCREENING_SYSTEM_PROMPT = """You are an expert at evaluating experts for consulting engagements.
+Given an expert's profile and a project hypothesis/focus, score the expert across multiple dimensions.
+
+SCORING DIMENSIONS (all scores 0-100):
+
+1. BACKGROUND FIT (40% weight):
+   - How well does the expert's employer, title, and experience match the project needs?
+   - Consider industry, role level, and functional expertise
+
+2. SCREENER QUALITY (40% weight):
+   - How thorough and relevant are the screener responses?
+   - Do they demonstrate deep knowledge of the topics?
+   - Are answers specific and detailed, or generic?
+
+3. RED FLAGS (20% weight - higher score = fewer red flags):
+   - Are there conflicts of interest?
+   - Is their experience too dated?
+   - Any gaps or inconsistencies?
+
+RECOMMENDATION LEVELS:
+- "strong_fit": Overall score >= 75 and no critical red flags
+- "maybe": Overall score 50-74 OR missing key information
+- "low_fit": Overall score < 50 OR critical red flags
+
+Return detailed scoring breakdown with justification."""
+
+
+UPDATE_DETECTION_SYSTEM_PROMPT = """You are an expert at analyzing email threads to detect whether experts mentioned are NEW or UPDATES to existing profiles.
+
+KEY DISTINCTIONS:
+1. NEW expert: First time mentioned in this project/thread
+2. UPDATE: Same expert mentioned before with new information (availability changes, screener updates, status changes)
+
+THREAD INDICATORS (suggest follow-up):
+- Subject line: "Re:", "FW:", reply chains
+- Body text: "Following up", "Update on", "As discussed"
+- References to previous emails or conversations
+
+FIELD CATEGORIZATION:
+- GLOBAL fields (apply across all networks): name, employer, title
+- NETWORK-SPECIFIC fields (can differ per network): status, availability, screenerResponses, conflictStatus
+
+CRITICAL RULES:
+1. If an expert appears multiple times in ONE email thread → consolidate to ONE entry, mark as NEW (it's their first mention in the system)
+2. If the email explicitly says "update" or "following up" about a known expert → mark as UPDATE
+3. When in doubt, default to NEW
+4. Always provide clear provenance for your determination
+
+Return analysis with per-expert breakdown."""
+
+
 DOCUMENT_SCREENING_SYSTEM_PROMPT = """You are an expert at evaluating experts for consulting engagements.
 Given an expert's profile, a project hypothesis, AND relevant document context, score the expert across multiple dimensions.
 
@@ -125,7 +178,7 @@ class ExpertExtractionService:
         if settings.openai_base_url:
             client_config["base_url"] = settings.openai_base_url
 
-        self.client = OpenAI(**client_config)
+        self.client = AsyncOpenAI(**client_config)
 
         # Use model from settings (Bain uses @personal-openai/ prefix with Portkey)
         self.model = settings.openai_model or "gpt-4o"
@@ -189,7 +242,7 @@ Extract all experts mentioned and return a JSON object with this exact structure
   "extractionNotes": string[] | null
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -227,7 +280,7 @@ Previous response:
 Please fix the JSON to match the exact schema required. Ensure all required fields are present and properly typed.
 Return ONLY the corrected JSON object."""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -281,7 +334,7 @@ Provide your recommendation as a JSON object:
   "missingInfo": ["info1", "info2"] | null
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
@@ -374,7 +427,7 @@ Provide your detailed scoring as a JSON object:
 
 Calculate overall_score as: (background_fit_score * 0.30) + (screener_quality_score * 0.30) + (document_relevance_score * 0.25) + (red_flags_score * 0.15)"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": DOCUMENT_SCREENING_SYSTEM_PROMPT},
@@ -387,5 +440,143 @@ Calculate overall_score as: (background_fit_score * 0.30) + (screener_quality_sc
         raw_response = response.choices[0].message.content or ""
         parsed = json.loads(raw_response)
         validated = AIScreeningResultWithDocs(**parsed)
+
+        return validated, raw_response, user_prompt
+
+    async def screen_expert(
+        self,
+        expert_name: str,
+        expert_employer: str | None,
+        expert_title: str | None,
+        expert_bio: str | None,
+        screener_responses: str | None,
+        screener_config: dict | None,
+        project_hypothesis: str
+    ) -> Tuple[AIScreeningResult, str, str]:
+        """
+        Generate smart fit assessment for expert (auto-scanning).
+
+        New scoring weights:
+        - Background Fit: 40%
+        - Screener Quality: 40%
+        - Red Flags: 20%
+
+        Args:
+            expert_name: Expert's full name
+            expert_employer: Current employer
+            expert_title: Job title
+            expert_bio: Bio or relevance bullets
+            screener_responses: Screener Q&A text
+            screener_config: Screener configuration with questions
+            project_hypothesis: Project focus/hypothesis
+
+        Returns:
+            Tuple of (result, raw_response, prompt)
+        """
+        user_prompt = f"""Evaluate this expert for the following project:
+
+PROJECT HYPOTHESIS/FOCUS:
+{project_hypothesis}
+
+EXPERT PROFILE:
+- Name: {expert_name}
+- Employer: {expert_employer or 'Unknown'}
+- Title: {expert_title or 'Unknown'}
+- Bio/Relevance: {expert_bio or 'Not provided'}
+- Screener Responses: {screener_responses or 'Not provided'}
+
+Provide your detailed scoring as a JSON object:
+{{
+  "grade": "strong" | "mixed" | "weak",
+  "score": 0-100,
+  "rationale": "2-3 sentence explanation covering background fit and screener assessment",
+  "confidence": "low" | "medium" | "high",
+  "missingInfo": ["info1", "info2"] | null,
+  "suggestedQuestions": ["question1", "question2"] | null,
+  "questionScores": [{{"questionId": "q1", "score": 0-100, "notes": "..."}}] | null
+}}
+
+Calculate score as: (background_fit_score * 0.40) + (screener_quality_score * 0.40) + (red_flags_score * 0.20)
+
+Grade thresholds:
+- strong: score >= 75
+- mixed: score 50-74
+- weak: score < 50"""
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": SCREENING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+
+        raw_response = response.choices[0].message.content or ""
+        parsed = json.loads(raw_response)
+        validated = AIScreeningResult(**parsed)
+
+        return validated, raw_response, user_prompt
+
+    async def analyze_email_for_updates(
+        self,
+        email_text: str,
+        project_hypothesis: str
+    ) -> Tuple[EmailUpdateAnalysis, str, str]:
+        """
+        Analyze whether an email contains updates to existing experts or new experts.
+
+        Args:
+            email_text: Raw email content
+            project_hypothesis: Project context
+
+        Returns:
+            Tuple of (analysis, raw_response, prompt)
+        """
+        user_prompt = f"""Analyze this email to determine if it contains NEW experts or UPDATES to existing ones.
+
+PROJECT CONTEXT: {project_hypothesis}
+
+EMAIL CONTENT:
+---
+{email_text}
+---
+
+Return a JSON object with this structure:
+{{
+  "isFollowUp": boolean,
+  "threadIndicators": ["Re:", "following up", etc.] | null,
+  "updateSummary": "Brief summary of updates" | null,
+  "expertUpdates": [
+    {{
+      "expertName": "Full name",
+      "updateType": "new" | "update",
+      "updatedFields": ["availability", "screenerResponses"] | null,
+      "globalFieldUpdates": {{"employer": "New Corp"}} | null,
+      "networkSpecificUpdates": {{"status": "available"}} | null,
+      "confidence": "low" | "medium" | "high",
+      "updateProvenance": {{
+        "excerptText": "Exact quote from email",
+        "confidence": "low" | "medium" | "high"
+      }} | null
+    }}
+  ],
+  "analysisNotes": ["note1", "note2"] | null
+}}"""
+
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": UPDATE_DETECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+
+        raw_response = response.choices[0].message.content or ""
+        parsed = json.loads(raw_response)
+        validated = EmailUpdateAnalysis(**parsed)
 
         return validated, raw_response, user_prompt

@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 # Load environment variables
 load_dotenv()
 
-from app.api.routes import data_room, settings, expert_networks, document_context, agent
+from app.api.routes import data_room, settings, expert_networks, document_context, agent, outlook
 from app.api import websocket
 from app.core.config import settings as app_settings
 from app.db.database import connect_db, disconnect_db
@@ -48,6 +48,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(expert_networks.router, prefix="/api")
 app.include_router(document_context.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
+app.include_router(outlook.router, prefix="/api")
 app.include_router(websocket.router)
 
 

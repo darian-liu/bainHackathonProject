@@ -1,9 +1,10 @@
 import chromadb
-from chromadb.config import Settings
+from chromadb.config import Settings as ChromaSettings
 from openai import OpenAI
 from pathlib import Path
 from typing import List, Optional
-import os
+
+from app.core.config import settings
 
 # Singleton instance
 _vector_store_instance: Optional["VectorStore"] = None
@@ -17,12 +18,17 @@ class VectorStore:
             persist_dir = Path("./chroma_db")
 
         self.client = chromadb.PersistentClient(
-            path=str(persist_dir), settings=Settings(anonymized_telemetry=False)
+            path=str(persist_dir), settings=ChromaSettings(anonymized_telemetry=False)
         )
         self.collection = self.client.get_or_create_collection(
             name="documents", metadata={"hnsw:space": "cosine"}
         )
-        self.openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        # Configure OpenAI client with optional Portkey base URL
+        client_config = {"api_key": settings.openai_api_key}
+        if settings.openai_base_url:
+            client_config["base_url"] = settings.openai_base_url
+        self.openai = OpenAI(**client_config)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings using OpenAI."""

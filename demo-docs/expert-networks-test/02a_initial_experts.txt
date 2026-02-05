@@ -1,0 +1,66 @@
+Subject: Healthcare IT Expert Profiles - Project Delta
+From: Emma Thompson <emma.thompson@guidepoint.com>
+Date: February 1, 2024 9:00 AM
+
+Hi Team,
+
+Here are our initial expert recommendations for your healthcare IT due diligence project:
+
+**Expert 1: Dr. Amanda Foster**
+Current Position: CTO at MedTech Solutions
+Previous: VP of Engineering at Epic Systems (2015-2020)
+Education: MS Computer Science, MIT
+
+Relevant Background:
+- Led Epic's interoperability initiatives with 200+ health systems
+- Expert in FHIR and HL7 standards
+- Implemented EHR integrations for major hospital networks
+
+Screener Responses:
+Q: Describe your experience with EHR implementations.
+A: I've led over 50 EHR implementation projects across academic medical centers and community hospitals. At Epic, I was responsible for the technical architecture of deployments serving 100M+ patient records.
+
+Q: What do you see as the biggest challenges in healthcare data interoperability?
+A: The biggest challenges are still legacy system integration and data standardization. While FHIR has helped, many systems still rely on outdated HL7 v2 interfaces.
+
+Conflict Status: Pending
+Availability: To be confirmed after clearance
+
+**Expert 2: James Rodriguez**
+Current Position: Director of Digital Health at Kaiser Permanente
+Previous: Principal Consultant at McKinsey Healthcare Practice
+
+Relevant Background:
+- Led Kaiser's $200M digital transformation
+- Expert in value-based care analytics
+- Former startup founder (health tech, acquired 2018)
+
+Screener Responses:
+Q: Describe your experience with EHR implementations.
+A: I've advised on EHR strategy for 20+ health systems during my time at McKinsey, and now oversee Kaiser's enterprise-wide digital platform.
+
+Q: What do you see as the biggest challenges in healthcare data interoperability?
+A: Data governance and patient consent management are underappreciated challenges. Technical interoperability is solvable, but organizational and regulatory barriers persist.
+
+Conflict Status: Cleared
+Availability: Monday Feb 5, 2-4pm PST; Thursday Feb 8, 10am-12pm PST
+
+**Expert 3: Dr. Sarah Kim**
+Current Position: Chief Medical Information Officer at UCLA Health
+Previous: Associate CMIO at Cedars-Sinai
+
+Relevant Background:
+- Physician informaticist with 15 years experience
+- Led clinical decision support implementations
+- Research focus on AI in radiology
+
+Screener Responses:
+Q: Describe your experience with EHR implementations.
+A: As CMIO, I've been the clinical lead for two major EHR transitions. My focus is on ensuring clinical workflow optimization and provider adoption.
+
+Conflict Status: Pending
+Availability: Limited - will confirm after conference next week
+
+Best regards,
+Emma Thompson
+Guidepoint Advisor Relations

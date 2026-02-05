@@ -10,18 +10,20 @@ async def create_project(
     db: databases.Database,
     name: str,
     hypothesis_text: str,
-    networks: Optional[List[str]] = None
+    networks: Optional[List[str]] = None,
+    screener_config: Optional[dict] = None
 ) -> dict:
     """Create a new project."""
     import secrets
 
     project_id = secrets.token_urlsafe(16)
     networks_json = json.dumps(networks) if networks else None
+    screener_config_json = json.dumps(screener_config) if screener_config else None
     now = datetime.utcnow()
 
     query = """
-        INSERT INTO Project (id, name, hypothesisText, networks, createdAt, updatedAt)
-        VALUES (:id, :name, :hypothesis_text, :networks, :created_at, :updated_at)
+        INSERT INTO Project (id, name, hypothesisText, networks, screenerConfigJson, createdAt, updatedAt)
+        VALUES (:id, :name, :hypothesis_text, :networks, :screener_config, :created_at, :updated_at)
     """
 
     await db.execute(
@@ -31,6 +33,7 @@ async def create_project(
             "name": name,
             "hypothesis_text": hypothesis_text,
             "networks": networks_json,
+            "screener_config": screener_config_json,
             "created_at": now,
             "updated_at": now
         }
@@ -41,6 +44,7 @@ async def create_project(
         "name": name,
         "hypothesisText": hypothesis_text,
         "networks": networks,
+        "screenerConfig": screener_config,
         "createdAt": now.isoformat(),
         "updatedAt": now.isoformat()
     }
@@ -59,6 +63,7 @@ async def get_project(db: databases.Database, project_id: str) -> Optional[dict]
         "name": row["name"],
         "hypothesisText": row["hypothesisText"],
         "networks": json.loads(row["networks"]) if row["networks"] else None,
+        "screenerConfig": json.loads(row["screenerConfigJson"]) if row["screenerConfigJson"] else None,
         "createdAt": row["createdAt"],
         "updatedAt": row["updatedAt"]
     }
@@ -75,6 +80,7 @@ async def list_projects(db: databases.Database) -> List[dict]:
             "name": row["name"],
             "hypothesisText": row["hypothesisText"],
             "networks": json.loads(row["networks"]) if row["networks"] else None,
+            "screenerConfig": json.loads(row["screenerConfigJson"]) if row["screenerConfigJson"] else None,
             "createdAt": row["createdAt"],
             "updatedAt": row["updatedAt"]
         }
@@ -87,7 +93,8 @@ async def update_project(
     project_id: str,
     name: Optional[str] = None,
     hypothesis_text: Optional[str] = None,
-    networks: Optional[List[str]] = None
+    networks: Optional[List[str]] = None,
+    screener_config: Optional[dict] = None
 ) -> bool:
     """Update project fields."""
     updates = []
@@ -104,6 +111,10 @@ async def update_project(
     if networks is not None:
         updates.append("networks = :networks")
         values["networks"] = json.dumps(networks)
+
+    if screener_config is not None:
+        updates.append("screenerConfigJson = :screener_config")
+        values["screener_config"] = json.dumps(screener_config)
 
     if not updates:
         return False

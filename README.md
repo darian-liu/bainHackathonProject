@@ -129,6 +129,47 @@ npm run dev
 | `AZURE_TENANT_ID` | Azure AD tenant ID | - |
 | `SHAREPOINT_SITE_ID` | SharePoint site ID | - |
 
+## Connecting Personal Outlook
+
+The Expert Networks module supports connecting your personal Outlook inbox to automatically ingest expert network emails.
+
+### Step 1: Register Azure App
+
+1. Go to [Azure Portal](https://portal.azure.com) → **App registrations** → **New registration**
+2. Configure:
+   - **Name**: `Bain Productivity Tool - Outlook`
+   - **Supported account types**: Select **"Personal Microsoft accounts only"** (or "Accounts in any organizational directory and personal Microsoft accounts" for both work and personal)
+   - **Redirect URI**: Select **Web** and enter `http://localhost:8000/api/outlook/callback`
+3. After creation, note the **Application (client) ID**
+4. Go to **Certificates & secrets** → **New client secret** → Copy the secret value
+
+### Step 2: Configure API Permissions
+
+1. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
+2. Add these permissions:
+   - `User.Read` - Sign in and read user profile
+   - `Mail.Read` - Read user mail
+   - `offline_access` - Maintain access to data (for refresh tokens)
+3. Click **Grant admin consent** (if you have admin rights) or wait for user consent during OAuth
+
+### Step 3: Configure in App
+
+1. Start the application and go to **Settings**
+2. In the **Personal Outlook Integration** section, enter:
+   - **Outlook Client ID**: Your Azure app's Application (client) ID
+   - **Outlook Client Secret**: Your client secret value
+   - **Redirect URI**: `http://localhost:8000/api/outlook/callback` (default)
+   - **Allowed Sender Domains** (optional): e.g., `alphasights.com, guidepoint.com, glg.it`
+3. Click **Save Settings**
+4. Click **Connect Outlook** and complete the Microsoft login/consent flow
+5. After successful connection, use **Test Connection** to verify
+
+### Troubleshooting
+
+- **"Token exchange failed"**: Check that Client ID and Secret are correct
+- **"AADSTS50011" redirect URI error**: Ensure the redirect URI in Azure matches exactly
+- **"Insufficient privileges"**: User needs to consent to the requested permissions
+
 ## Project Structure
 
 ```

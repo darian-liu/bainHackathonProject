@@ -80,6 +80,12 @@ export interface SettingsData {
   graph_client_secret: string
   graph_tenant_id: string
   sharepoint_site_id: string
+  // Personal Outlook Integration
+  outlook_client_id: string
+  outlook_client_secret: string
+  outlook_redirect_uri: string
+  outlook_allowed_sender_domains: string
+  outlook_network_keywords: string
 }
 
 export interface TestConnectionResult {
@@ -103,6 +109,48 @@ export const settingsApi = {
 
   testConnections: async (): Promise<TestConnectionResult> => {
     return fetchJSON<TestConnectionResult>('/api/settings/test', {
+      method: 'POST',
+    })
+  },
+}
+
+// Outlook types
+export interface OutlookStatus {
+  connected: boolean
+  userEmail: string | null
+  lastConnectedAt: string | null
+  lastTestAt: string | null
+  lastSyncAt: string | null
+}
+
+export interface OutlookTestResult {
+  success: boolean
+  userEmail: string | null
+  error: string | null
+}
+
+export interface OutlookAuthUrl {
+  authUrl: string
+}
+
+// Outlook API
+export const outlookApi = {
+  getStatus: async (): Promise<OutlookStatus> => {
+    return fetchJSON<OutlookStatus>('/api/outlook/status')
+  },
+
+  getAuthUrl: async (returnPath: string = '/settings'): Promise<OutlookAuthUrl> => {
+    return fetchJSON<OutlookAuthUrl>(`/api/outlook/auth-url?return_path=${encodeURIComponent(returnPath)}`)
+  },
+
+  testConnection: async (): Promise<OutlookTestResult> => {
+    return fetchJSON<OutlookTestResult>('/api/outlook/test', {
+      method: 'POST',
+    })
+  },
+
+  disconnect: async (): Promise<{ success: boolean; message: string }> => {
+    return fetchJSON<{ success: boolean; message: string }>('/api/outlook/disconnect', {
       method: 'POST',
     })
   },

@@ -22,6 +22,12 @@ class SettingsUpdate(BaseModel):
     graph_tenant_id: Optional[str] = None
     sharepoint_site_id: Optional[str] = None
     document_source_mode: Optional[str] = None
+    # Personal Outlook Integration
+    outlook_client_id: Optional[str] = None
+    outlook_client_secret: Optional[str] = None
+    outlook_redirect_uri: Optional[str] = None
+    outlook_allowed_sender_domains: Optional[str] = None
+    outlook_network_keywords: Optional[str] = None
 
 
 class SettingsResponse(BaseModel):
@@ -33,6 +39,12 @@ class SettingsResponse(BaseModel):
     graph_client_secret: str  # masked
     graph_tenant_id: str
     sharepoint_site_id: str
+    # Personal Outlook Integration
+    outlook_client_id: str
+    outlook_client_secret: str  # masked
+    outlook_redirect_uri: str
+    outlook_allowed_sender_domains: str
+    outlook_network_keywords: str
 
 
 class TestConnectionResponse(BaseModel):
@@ -95,6 +107,27 @@ async def update_settings(update: SettingsUpdate):
             )
         current["document_source_mode"] = update.document_source_mode
         os.environ["DOCUMENT_SOURCE_MODE"] = update.document_source_mode
+
+    # Personal Outlook Integration
+    if update.outlook_client_id is not None:
+        current["outlook_client_id"] = update.outlook_client_id
+        os.environ["OUTLOOK_CLIENT_ID"] = update.outlook_client_id
+
+    if update.outlook_client_secret is not None:
+        current["outlook_client_secret"] = update.outlook_client_secret
+        os.environ["OUTLOOK_CLIENT_SECRET"] = update.outlook_client_secret
+
+    if update.outlook_redirect_uri is not None:
+        current["outlook_redirect_uri"] = update.outlook_redirect_uri
+        os.environ["OUTLOOK_REDIRECT_URI"] = update.outlook_redirect_uri
+
+    if update.outlook_allowed_sender_domains is not None:
+        current["outlook_allowed_sender_domains"] = update.outlook_allowed_sender_domains
+        os.environ["OUTLOOK_ALLOWED_SENDER_DOMAINS"] = update.outlook_allowed_sender_domains
+
+    if update.outlook_network_keywords is not None:
+        current["outlook_network_keywords"] = update.outlook_network_keywords
+        os.environ["OUTLOOK_NETWORK_KEYWORDS"] = update.outlook_network_keywords
 
     # Save to file
     save_settings_to_file(current)
