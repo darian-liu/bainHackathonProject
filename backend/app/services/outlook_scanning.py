@@ -247,8 +247,8 @@ class OutlookScanningService:
                             sender=msg.get("from", {}).get("emailAddress", {}).get("address"),
                             received_at=msg.get("receivedDateTime"),
                         )
-                    except:
-                        pass
+                    except Exception as record_error:
+                        print(f"Warning: Failed to record scanned email: {record_error}")
                     return {"status": "error", "error": str(e), "msg": msg}
         
         # Process all emails in parallel

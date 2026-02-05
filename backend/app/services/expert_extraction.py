@@ -2,7 +2,7 @@
 
 import json
 from typing import Tuple, List
-from openai import OpenAI
+from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.expert_extraction import (
     EmailExtractionResult,
@@ -148,7 +148,7 @@ class ExpertExtractionService:
         if settings.openai_base_url:
             client_config["base_url"] = settings.openai_base_url
 
-        self.client = OpenAI(**client_config)
+        self.client = AsyncOpenAI(**client_config)
 
         # Use model from settings (Bain uses @personal-openai/ prefix with Portkey)
         self.model = settings.openai_model or "gpt-4o"
@@ -212,7 +212,7 @@ Extract all experts mentioned and return a JSON object with this exact structure
   "extractionNotes": string[] | null
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -250,7 +250,7 @@ Previous response:
 Please fix the JSON to match the exact schema required. Ensure all required fields are present and properly typed.
 Return ONLY the corrected JSON object."""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -304,7 +304,7 @@ Provide your recommendation as a JSON object:
   "missingInfo": ["info1", "info2"] | null
 }}"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
@@ -405,7 +405,7 @@ ASSESSMENT GUIDANCE:
 - Generate "suggestedQuestions" for areas where more info would help
 - Be specific about what is strong, mixed, or weak"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": SCREENING_SYSTEM_PROMPT},
@@ -484,7 +484,7 @@ IMPORTANT:
 - Look for update patterns: "update on", "availability for", "screener responses from"
 - Distinguish between initial proposals and follow-up communications"""
 
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": UPDATE_DETECTION_SYSTEM_PROMPT},

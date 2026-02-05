@@ -1,5 +1,6 @@
 """Expert Networks API routes."""
 
+import asyncio
 import json
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -669,59 +670,65 @@ async def screen_all_experts(request: Request, project_id: str, force: bool = Fa
         )
     
     extraction_service = ExpertExtractionService()
-    results = []
-    screened = 0
-    failed = 0
-    
-    for expert in experts_to_screen:
-        try:
-            # Get expert sources for bio and screener responses
-            sources = await experts.get_expert_sources(db, expert["id"])
-            screener_responses = sources[0].get("extractedScreener") if sources else None
-            expert_bio = sources[0].get("extractedBio") if sources else None
-            
-            # Run screening
-            result, raw_response, prompt = await extraction_service.screen_expert(
-                expert_name=expert["canonicalName"],
-                expert_employer=expert.get("canonicalEmployer"),
-                expert_title=expert.get("canonicalTitle"),
-                expert_bio=expert_bio,
-                screener_responses=screener_responses,
-                screener_config=screener_config,
-                project_hypothesis=project_hypothesis
-            )
-            
-            # Update expert with screening result
-            await experts.update_expert(
-                db,
-                expert["id"],
-                aiScreeningGrade=result.grade,
-                aiScreeningScore=result.score,
-                aiScreeningRationale=result.rationale,
-                aiScreeningConfidence=result.confidence,
-                aiScreeningMissingInfo=json.dumps(result.missingInfo) if result.missingInfo else None,
-                aiScreeningRaw=raw_response,
-                aiScreeningPrompt=prompt
-            )
-            
-            results.append({
-                "expertId": expert["id"],
-                "expertName": expert["canonicalName"],
-                "grade": result.grade,
-                "score": result.score,
-                "success": True
-            })
-            screened += 1
-            
-        except Exception as e:
-            results.append({
-                "expertId": expert["id"],
-                "expertName": expert["canonicalName"],
-                "success": False,
-                "error": str(e)
-            })
-            failed += 1
-    
+
+    # Use semaphore to limit concurrent LLM calls (avoid rate limits)
+    semaphore = asyncio.Semaphore(5)
+
+    async def screen_one_expert(expert: dict) -> dict:
+        """Screen a single expert with rate limiting."""
+        async with semaphore:
+            try:
+                # Get expert sources for bio and screener responses
+                sources = await experts.get_expert_sources(db, expert["id"])
+                screener_responses = sources[0].get("extractedScreener") if sources else None
+                expert_bio = sources[0].get("extractedBio") if sources else None
+
+                # Run screening
+                result, raw_response, prompt = await extraction_service.screen_expert(
+                    expert_name=expert["canonicalName"],
+                    expert_employer=expert.get("canonicalEmployer"),
+                    expert_title=expert.get("canonicalTitle"),
+                    expert_bio=expert_bio,
+                    screener_responses=screener_responses,
+                    screener_config=screener_config,
+                    project_hypothesis=project_hypothesis
+                )
+
+                # Update expert with screening result
+                await experts.update_expert(
+                    db,
+                    expert["id"],
+                    aiScreeningGrade=result.grade,
+                    aiScreeningScore=result.score,
+                    aiScreeningRationale=result.rationale,
+                    aiScreeningConfidence=result.confidence,
+                    aiScreeningMissingInfo=json.dumps(result.missingInfo) if result.missingInfo else None,
+                    aiScreeningRaw=raw_response,
+                    aiScreeningPrompt=prompt
+                )
+
+                return {
+                    "expertId": expert["id"],
+                    "expertName": expert["canonicalName"],
+                    "grade": result.grade,
+                    "score": result.score,
+                    "success": True
+                }
+
+            except Exception as e:
+                return {
+                    "expertId": expert["id"],
+                    "expertName": expert["canonicalName"],
+                    "success": False,
+                    "error": str(e)
+                }
+
+    # Process all experts in parallel (with semaphore limiting concurrency)
+    results = await asyncio.gather(*[screen_one_expert(e) for e in experts_to_screen])
+
+    # Count successes and failures
+    screened = sum(1 for r in results if r["success"])
+    failed = sum(1 for r in results if not r["success"])
     skipped = len(all_experts) - len(experts_to_screen)
     
     return ScreenAllResponse(

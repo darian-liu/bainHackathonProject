@@ -500,8 +500,9 @@ export function useScreenExpert() {
   return useMutation({
     mutationFn: ({ expertId, projectId }: { expertId: string; projectId: string }) =>
       expertNetworksApi.screenExpert(expertId, projectId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -535,6 +536,7 @@ export function useExperts(projectId: string, status?: string) {
     queryKey: ['experts', projectId, status],
     queryFn: () => expertNetworksApi.listExperts(projectId, status),
     enabled: !!projectId,
+    staleTime: 0, // Always refetch to ensure fresh data, preventing stale cross-project contamination
   })
 }
 
@@ -544,13 +546,15 @@ export function useUpdateExpert() {
     mutationFn: ({
       expertId,
       updates,
+      projectId,
     }: {
       expertId: string
       updates: Partial<Expert>
+      projectId: string
     }) => expertNetworksApi.updateExpert(expertId, updates),
-    onSuccess: () => {
-      // Invalidate all expert queries to refresh the list
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -576,8 +580,9 @@ export function useRecommendExpert() {
   return useMutation({
     mutationFn: ({ expertId, projectId }: { expertId: string; projectId: string }) =>
       expertNetworksApi.recommendExpert(expertId, projectId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project's experts to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -593,11 +598,12 @@ export function useDuplicates(projectId: string, status?: string) {
 export function useMergeDuplicates() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (candidateId: string) =>
+    mutationFn: ({ candidateId, projectId }: { candidateId: string; projectId: string }) =>
       expertNetworksApi.mergeDuplicates(candidateId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['duplicates'] })
-      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
     },
   })
 }
@@ -605,9 +611,11 @@ export function useMergeDuplicates() {
 export function useMarkNotSame() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (candidateId: string) => expertNetworksApi.markNotSame(candidateId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['duplicates'] })
+    mutationFn: ({ candidateId, projectId }: { candidateId: string; projectId: string }) =>
+      expertNetworksApi.markNotSame(candidateId),
+    onSuccess: (_, variables) => {
+      // Invalidate only the specific project to avoid stale data from other projects
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
     },
   })
 }
