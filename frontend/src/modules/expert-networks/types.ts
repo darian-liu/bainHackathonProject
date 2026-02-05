@@ -259,3 +259,29 @@ export interface ExpertWithDetails extends Expert {
   sources: SourceWithProvenance[]
   userEdits: UserEdit[]
 }
+
+// Auto-scan inbox result
+export interface AutoScanProgress {
+  stage: string
+  totalEmails: number
+  processedEmails: number
+  filteredEmails: number
+  ingestedCount: number
+  skippedCount: number
+  errorCount: number
+  errors: string[]
+}
+
+export interface AutoScanResult {
+  status: 'scanning' | 'complete' | 'error'
+  progress: AutoScanProgress
+  results: {
+    ingestionLogIds: string[]
+    summary: IngestionSummary & {
+      emailsProcessed: number
+      emailsSkipped: number
+    }
+    changes: IngestionChanges
+  }
+  message: string
+}

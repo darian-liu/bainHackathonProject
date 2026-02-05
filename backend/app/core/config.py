@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # OpenAI / Portkey
     openai_api_key: str = ""
     openai_base_url: str = ""
-    openai_model: str = "gpt-4o"  # Default model, Bain uses @personal-openai/ prefix
+    openai_model: str = "gpt-4o-mini"  # Faster model for extraction, 3-5x faster than gpt-4o
 
     # MS Graph (for live mode)
     graph_client_id: str = ""
@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     azure_client_id: str = Field(default="", alias="azure_client_id")
     azure_client_secret: str = Field(default="", alias="azure_client_secret")
     azure_tenant_id: str = Field(default="", alias="azure_tenant_id")
+
+    # Personal Outlook Integration
+    outlook_client_id: str = ""
+    outlook_client_secret: str = ""
+    outlook_redirect_uri: str = "http://localhost:8000/api/outlook/callback"
+    outlook_allowed_sender_domains: str = ""  # Comma-separated, for future email scanning
+    outlook_network_keywords: str = ""  # Comma-separated, for future network detection
 
     # Server
     backend_port: int = 8000
@@ -94,6 +101,11 @@ class Settings(BaseSettings):
             "graph_client_secret": self._mask_key(self.graph_client_secret),
             "graph_tenant_id": self.graph_tenant_id,
             "sharepoint_site_id": self.sharepoint_site_id,
+            "outlook_client_id": self.outlook_client_id,
+            "outlook_client_secret": self._mask_key(self.outlook_client_secret),
+            "outlook_redirect_uri": self.outlook_redirect_uri,
+            "outlook_allowed_sender_domains": self.outlook_allowed_sender_domains,
+            "outlook_network_keywords": self.outlook_network_keywords,
         }
 
     def _mask_key(self, key: str) -> str:

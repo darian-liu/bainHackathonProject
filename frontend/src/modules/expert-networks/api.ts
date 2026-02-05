@@ -13,6 +13,7 @@ import type {
   AutoIngestResult,
   IngestionLog,
   ExpertWithDetails,
+  AutoScanResult,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -130,37 +131,8 @@ export const expertNetworksApi = {
     return res.json()
   },
 
-  // Undo ingestion
-  undoIngestion: async (
-    projectId: string,
-    logId: string
-  ): Promise<{ success: boolean; undone: unknown; message: string }> => {
-    const res = await fetch(
-      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/${logId}/undo`,
-      { method: 'POST' }
-    )
-    if (!res.ok) {
-      const error = await res.json()
-      throw new Error(error.detail || 'Undo failed')
-    }
-    return res.json()
-  },
-
-  // Redo ingestion
-  redoIngestion: async (
-    projectId: string,
-    logId: string
-  ): Promise<{ success: boolean; redone: unknown; message: string }> => {
-    const res = await fetch(
-      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/${logId}/redo`,
-      { method: 'POST' }
-    )
-    if (!res.ok) {
-      const error = await res.json()
-      throw new Error(error.detail || 'Redo failed')
-    }
-    return res.json()
-  },
+  // NOTE: undoIngestion and redoIngestion REMOVED - they were fundamentally broken
+  // Users should use explicit delete instead
 
   // Get latest ingestion log
   getLatestIngestionLog: async (
@@ -196,6 +168,26 @@ export const expertNetworksApi = {
     if (!res.ok) {
       const error = await res.json()
       throw new Error(error.detail || 'Screening failed')
+    }
+    return res.json()
+  },
+
+  // Auto-scan Outlook inbox
+  autoScanInbox: async (
+    projectId: string,
+    maxEmails: number = 50
+  ): Promise<AutoScanResult> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/auto-scan-inbox`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxEmails }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Auto-scan failed')
     }
     return res.json()
   },
@@ -264,6 +256,26 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/experts/${expertId}/sources`
     )
     if (!res.ok) throw new Error('Failed to fetch expert sources')
+    return res.json()
+  },
+
+  // Bulk delete experts
+  bulkDeleteExperts: async (
+    projectId: string,
+    expertIds: string[]
+  ): Promise<{ success: boolean; deletedCount: number; failedCount: number }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/experts/bulk-delete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expertIds }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Bulk delete failed')
+    }
     return res.json()
   },
 
@@ -436,33 +448,22 @@ export function useAutoIngest() {
   })
 }
 
-export function useUndoIngestion() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ projectId, logId }: { projectId: string; logId: string }) =>
-      expertNetworksApi.undoIngestion(projectId, logId),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['experts', variables.projectId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['ingestion-log', variables.projectId],
-      })
-    },
-  })
-}
+// NOTE: useUndoIngestion and useRedoIngestion REMOVED - they were fundamentally broken
+// Users should use explicit delete instead
 
-export function useRedoIngestion() {
+export function useBulkDeleteExperts() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ projectId, logId }: { projectId: string; logId: string }) =>
-      expertNetworksApi.redoIngestion(projectId, logId),
+    mutationFn: ({
+      projectId,
+      expertIds,
+    }: {
+      projectId: string
+      expertIds: string[]
+    }) => expertNetworksApi.bulkDeleteExperts(projectId, expertIds),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
         queryKey: ['experts', variables.projectId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['ingestion-log', variables.projectId],
       })
     },
   })
@@ -512,6 +513,19 @@ export function useScreenAllExperts() {
       expertNetworksApi.screenAllExperts(projectId, force),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+    },
+  })
+}
+
+export function useAutoScanInbox() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, maxEmails }: { projectId: string; maxEmails?: number }) =>
+      expertNetworksApi.autoScanInbox(projectId, maxEmails),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['ingestion-log', variables.projectId] })
     },
   })
 }

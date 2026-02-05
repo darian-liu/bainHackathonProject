@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Settings, Eye, EyeOff, Loader2, Check, X, RefreshCw } from 'lucide-react'
-import { settingsApi, type SettingsData } from '@/services/api'
+import { Settings, Eye, EyeOff, Loader2, Check, RefreshCw, Mail, Link2, Unlink } from 'lucide-react'
+import { settingsApi, outlookApi, type SettingsData } from '@/services/api'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -53,8 +54,28 @@ function CredentialInput({
 
 export function SettingsPage() {
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [formData, setFormData] = useState<Partial<SettingsData>>({})
   const [hasChanges, setHasChanges] = useState(false)
+  const [outlookMessage, setOutlookMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // Handle OAuth callback query params
+  useEffect(() => {
+    const connected = searchParams.get('outlook_connected')
+    const error = searchParams.get('outlook_error')
+
+    if (connected === 'true') {
+      setOutlookMessage({ type: 'success', text: 'Outlook connected successfully!' })
+      queryClient.invalidateQueries({ queryKey: ['outlook-status'] })
+      // Clean up URL
+      searchParams.delete('outlook_connected')
+      setSearchParams(searchParams, { replace: true })
+    } else if (error) {
+      setOutlookMessage({ type: 'error', text: `Outlook connection failed: ${error}` })
+      searchParams.delete('outlook_error')
+      setSearchParams(searchParams, { replace: true })
+    }
+  }, [searchParams, setSearchParams, queryClient])
 
   // Fetch current settings
   const { data: currentSettings, isLoading } = useQuery({
@@ -76,6 +97,48 @@ export function SettingsPage() {
   const testMutation = useMutation({
     mutationFn: settingsApi.testConnections,
   })
+
+  // Outlook status query
+  const { data: outlookStatus, isLoading: isLoadingOutlook } = useQuery({
+    queryKey: ['outlook-status'],
+    queryFn: outlookApi.getStatus,
+  })
+
+  // Outlook test mutation
+  const outlookTestMutation = useMutation({
+    mutationFn: outlookApi.testConnection,
+    onSuccess: (data) => {
+      if (data.success) {
+        setOutlookMessage({ type: 'success', text: `Connection verified: ${data.userEmail}` })
+        queryClient.invalidateQueries({ queryKey: ['outlook-status'] })
+      } else {
+        setOutlookMessage({ type: 'error', text: data.error || 'Test failed' })
+      }
+    },
+  })
+
+  // Outlook disconnect mutation
+  const outlookDisconnectMutation = useMutation({
+    mutationFn: outlookApi.disconnect,
+    onSuccess: () => {
+      setOutlookMessage({ type: 'success', text: 'Outlook disconnected' })
+      queryClient.invalidateQueries({ queryKey: ['outlook-status'] })
+    },
+  })
+
+  // Connect Outlook handler
+  const handleConnectOutlook = async () => {
+    try {
+      // Auto-save if there are unsaved Outlook credentials
+      if (hasChanges) {
+        await saveMutation.mutateAsync(formData)
+      }
+      const { authUrl } = await outlookApi.getAuthUrl('/settings')
+      window.location.href = authUrl
+    } catch (error) {
+      setOutlookMessage({ type: 'error', text: 'Failed to start OAuth flow. Check credentials.' })
+    }
+  }
 
   const handleFieldChange = (field: keyof SettingsData, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -149,127 +212,139 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Microsoft Graph Configuration */}
+      {/* Personal Outlook Integration */}
       <Card>
         <CardHeader>
-          <CardTitle>Microsoft Graph Configuration</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="w-5 h-5" />
+            Personal Outlook Integration
+          </CardTitle>
           <CardDescription>
-            Required for SharePoint integration (live mode)
+            Connect your personal Outlook inbox for expert-network email ingestion.
+            Required to automatically scan emails from AlphaSights, Guidepoint, GLG, etc.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <CredentialInput
-            label="Client ID"
-            description="Azure AD App Registration Client ID"
-            value={getDisplayValue('graph_client_id')}
-            onChange={(v) => handleFieldChange('graph_client_id', v)}
+            label="Outlook Client ID"
+            description="Azure App Registration Client ID (for personal accounts)"
+            value={getDisplayValue('outlook_client_id')}
+            onChange={(v) => handleFieldChange('outlook_client_id', v)}
             placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
           />
           <CredentialInput
-            label="Client Secret"
-            description="Azure AD App Registration Client Secret"
-            value={getDisplayValue('graph_client_secret')}
-            onChange={(v) => handleFieldChange('graph_client_secret', v)}
+            label="Outlook Client Secret"
+            description="Azure App Registration Client Secret"
+            value={getDisplayValue('outlook_client_secret')}
+            onChange={(v) => handleFieldChange('outlook_client_secret', v)}
             placeholder="Your client secret"
             isSecret
           />
           <CredentialInput
-            label="Tenant ID"
-            description="Microsoft 365 Tenant ID"
-            value={getDisplayValue('graph_tenant_id')}
-            onChange={(v) => handleFieldChange('graph_tenant_id', v)}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            label="Redirect URI"
+            description="OAuth callback URL (must match Azure app registration)"
+            value={getDisplayValue('outlook_redirect_uri')}
+            onChange={(v) => handleFieldChange('outlook_redirect_uri', v)}
+            placeholder="http://localhost:8000/api/outlook/callback"
           />
           <CredentialInput
-            label="SharePoint Site ID"
-            description="The ID of your SharePoint site"
-            value={getDisplayValue('sharepoint_site_id')}
-            onChange={(v) => handleFieldChange('sharepoint_site_id', v)}
-            placeholder="Your SharePoint site ID"
+            label="Allowed Sender Domains (Optional)"
+            description="Comma-separated domains to filter emails (e.g., alphasights.com, guidepoint.com, glg.it)"
+            value={getDisplayValue('outlook_allowed_sender_domains')}
+            onChange={(v) => handleFieldChange('outlook_allowed_sender_domains', v)}
+            placeholder="alphasights.com, guidepoint.com, glg.it"
           />
-        </CardContent>
-      </Card>
+          <CredentialInput
+            label="Network Keywords (Optional)"
+            description="Comma-separated keywords to detect expert networks (e.g., AlphaSights, Guidepoint, GLG)"
+            value={getDisplayValue('outlook_network_keywords')}
+            onChange={(v) => handleFieldChange('outlook_network_keywords', v)}
+            placeholder="AlphaSights, Guidepoint, GLG"
+          />
 
-      {/* Document Source Mode */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Document Source</CardTitle>
-          <CardDescription>
-            Choose between local demo files or live SharePoint connection
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-4">
-            <button
-              onClick={() => handleFieldChange('document_source_mode', 'mock')}
-              className={cn(
-                'flex-1 p-4 border rounded-lg text-left transition-colors',
-                getDisplayValue('document_source_mode') === 'mock'
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'hover:bg-slate-50'
-              )}
-            >
-              <div className="font-medium">Mock Mode</div>
-              <div className="text-sm text-muted-foreground">
-                Use local demo-docs folder
-              </div>
-            </button>
-            <button
-              onClick={() => handleFieldChange('document_source_mode', 'live')}
-              className={cn(
-                'flex-1 p-4 border rounded-lg text-left transition-colors',
-                getDisplayValue('document_source_mode') === 'live'
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'hover:bg-slate-50'
-              )}
-            >
-              <div className="font-medium">Live Mode</div>
-              <div className="text-sm text-muted-foreground">
-                Connect to SharePoint
-              </div>
-            </button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Test Connection Results */}
-      {testMutation.data && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Connection Test Results</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center gap-2">
-              {testMutation.data.openai ? (
-                <Check className="w-5 h-5 text-green-500" />
-              ) : (
-                <X className="w-5 h-5 text-red-500" />
-              )}
-              <span>OpenAI API</span>
-              {testMutation.data.errors?.openai && (
-                <span className="text-sm text-red-500 ml-auto">
-                  {testMutation.data.errors.openai}
-                </span>
-              )}
-            </div>
-            {testMutation.data.sharepoint !== null && (
-              <div className="flex items-center gap-2">
-                {testMutation.data.sharepoint ? (
-                  <Check className="w-5 h-5 text-green-500" />
+          {/* Connection Status */}
+          <div className="pt-4 border-t">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Connection Status</div>
+                {isLoadingOutlook ? (
+                  <div className="text-sm text-muted-foreground">Loading...</div>
+                ) : outlookStatus?.connected ? (
+                  <div className="text-sm text-green-600 flex items-center gap-1">
+                    <Check className="w-4 h-4" />
+                    Connected as {outlookStatus.userEmail}
+                    {outlookStatus.lastTestAt && (
+                      <span className="text-muted-foreground ml-2">
+                        (tested {new Date(outlookStatus.lastTestAt).toLocaleString()})
+                      </span>
+                    )}
+                  </div>
                 ) : (
-                  <X className="w-5 h-5 text-red-500" />
-                )}
-                <span>SharePoint</span>
-                {testMutation.data.errors?.sharepoint && (
-                  <span className="text-sm text-red-500 ml-auto">
-                    {testMutation.data.errors.sharepoint}
-                  </span>
+                  <div className="text-sm text-muted-foreground">Not connected</div>
                 )}
               </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+              <div className="flex gap-2">
+                {outlookStatus?.connected ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => outlookTestMutation.mutate()}
+                      disabled={outlookTestMutation.isPending}
+                    >
+                      {outlookTestMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4 mr-1" />
+                          Test
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => outlookDisconnectMutation.mutate()}
+                      disabled={outlookDisconnectMutation.isPending}
+                    >
+                      {outlookDisconnectMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <>
+                          <Unlink className="w-4 h-4 mr-1" />
+                          Disconnect
+                        </>
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleConnectOutlook}
+                    disabled={!getDisplayValue('outlook_client_id') || !getDisplayValue('outlook_client_secret')}
+                  >
+                    <Link2 className="w-4 h-4 mr-1" />
+                    Connect Outlook
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Outlook Message */}
+          {outlookMessage && (
+            <div
+              className={cn(
+                'p-3 rounded-md text-sm',
+                outlookMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+              )}
+            >
+              {outlookMessage.text}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Action Buttons */}
       <div className="flex gap-3">

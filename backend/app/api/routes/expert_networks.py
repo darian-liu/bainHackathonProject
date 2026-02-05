@@ -71,6 +71,10 @@ class AutoIngestRequest(BaseModel):
     autoMergeThreshold: float = 0.85  # Score above which to auto-merge
 
 
+class AutoScanInboxRequest(BaseModel):
+    maxEmails: int = 50  # Maximum number of emails to scan
+
+
 class ScreenExpertRequest(BaseModel):
     projectId: str
 
@@ -311,50 +315,42 @@ async def auto_ingest(request: Request, project_id: str, req: AutoIngestRequest)
         raise HTTPException(status_code=500, detail=f"Auto-ingest failed: {str(e)}")
 
 
-@router.post("/projects/{project_id}/ingestion-logs/{log_id}/undo")
-async def undo_ingestion(project_id: str, log_id: str):
-    """Undo a previous ingestion operation."""
-    from app.services.auto_ingestion import AutoIngestionService
+@router.post("/projects/{project_id}/auto-scan-inbox")
+@limiter.limit("5/minute")
+async def auto_scan_inbox(request: Request, project_id: str, req: AutoScanInboxRequest = AutoScanInboxRequest()):
+    """
+    Auto-scan Outlook inbox for expert network emails and ingest them.
+    
+    Scans recent emails, filters by sender domain and keywords,
+    and feeds qualifying emails into the auto-ingestion pipeline.
+    """
+    from app.services.outlook_scanning import outlook_scanning_service
     
     db = await get_database()
     
-    # Get the log
-    log = await ingestion_log.get_ingestion_log(db, log_id)
-    if not log or log["projectId"] != project_id:
-        raise HTTPException(status_code=404, detail="Ingestion log not found")
-    
-    if log["status"] == "undone":
-        raise HTTPException(status_code=400, detail="Ingestion already undone")
+    # Verify project exists
+    project = await projects.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
     
     try:
-        service = AutoIngestionService()
-        result = await service.undo_ingestion(db, log)
+        result = await outlook_scanning_service.scan_inbox(
+            db=db,
+            project_id=project_id,
+            max_emails=req.maxEmails,
+        )
+        
         return result
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Undo failed: {str(e)}")
+        import traceback
+        print(f"Auto-scan inbox error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Auto-scan failed: {str(e)}")
 
 
-@router.post("/projects/{project_id}/ingestion-logs/{log_id}/redo")
-async def redo_ingestion(project_id: str, log_id: str):
-    """Redo a previously undone ingestion operation."""
-    from app.services.auto_ingestion import AutoIngestionService
-    
-    db = await get_database()
-    
-    # Get the log
-    log = await ingestion_log.get_ingestion_log(db, log_id)
-    if not log or log["projectId"] != project_id:
-        raise HTTPException(status_code=404, detail="Ingestion log not found")
-    
-    if log["status"] != "undone":
-        raise HTTPException(status_code=400, detail="Ingestion has not been undone")
-    
-    try:
-        service = AutoIngestionService()
-        result = await service.redo_ingestion(db, log)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Redo failed: {str(e)}")
+# NOTE: Undo/Redo endpoints REMOVED - they were fundamentally broken
+# Users should use explicit delete instead (multi-select delete in UI)
 
 
 @router.get("/projects/{project_id}/ingestion-logs")
@@ -469,6 +465,39 @@ async def delete_expert(expert_id: str):
         raise HTTPException(status_code=404, detail="Expert not found")
 
     return {"success": True}
+
+
+@router.post("/projects/{project_id}/experts/bulk-delete")
+async def bulk_delete_experts(project_id: str, request: Request):
+    """Delete multiple experts at once."""
+    db = await get_database()
+    
+    body = await request.json()
+    expert_ids = body.get("expertIds", [])
+    
+    if not expert_ids:
+        raise HTTPException(status_code=400, detail="No expert IDs provided")
+    
+    deleted = []
+    failed = []
+    
+    for expert_id in expert_ids:
+        try:
+            success = await experts.delete_expert(db, expert_id)
+            if success:
+                deleted.append(expert_id)
+            else:
+                failed.append({"id": expert_id, "reason": "Not found"})
+        except Exception as e:
+            failed.append({"id": expert_id, "reason": str(e)})
+    
+    return {
+        "success": True,
+        "deleted": deleted,
+        "deletedCount": len(deleted),
+        "failed": failed,
+        "failedCount": len(failed),
+    }
 
 
 @router.get("/experts/{expert_id}/sources")

@@ -4,9 +4,9 @@
  */
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Download, Loader2, Search, RefreshCw, ArrowLeft, Undo2, Redo2, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUpDown, ArrowUp, ArrowDown, Filter, Eye } from 'lucide-react'
-import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUndoIngestion, useRedoIngestion, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, expertNetworksApi } from './api'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, Mail } from 'lucide-react'
+import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,20 +22,78 @@ import type { Expert, ExpertStatus, ScreenerQuestion } from './types'
 export function TrackerPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { data: projectData } = useProject(projectId!)
   const { data, isLoading, refetch } = useExperts(projectId!)
   const { data: ingestionLogData, refetch: refetchLog } = useLatestIngestionLog(projectId!)
-  const undoIngestion = useUndoIngestion()
-  const redoIngestion = useRedoIngestion()
   const updateExpert = useUpdateExpert()
 
   const updateScreenerConfig = useUpdateScreenerConfig()
   const screenAllExperts = useScreenAllExperts()
-  
+  const autoScanInbox = useAutoScanInbox()
+  const bulkDeleteExperts = useBulkDeleteExperts()
+
+  // Multi-select state for bulk delete
+  const [selectedExperts, setSelectedExperts] = useState<Set<string>>(new Set())
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  // Auto-scan state
+  const [scanProgress, setScanProgress] = useState<{
+    isScanning: boolean
+    stage: string
+    message: string
+    result?: {
+      addedCount: number
+      updatedCount: number
+      emailsProcessed: number
+    }
+  } | null>(null)
+
+  // Check for scanning query param and trigger scan
+  useEffect(() => {
+    const isScanning = searchParams.get('scanning') === 'true'
+    if (isScanning && projectId && !scanProgress) {
+      // Start the scan
+      setScanProgress({
+        isScanning: true,
+        stage: 'connecting',
+        message: 'Connecting to Outlook...',
+      })
+
+      // Remove the query param
+      setSearchParams({})
+
+      // Execute the scan (reduced to 10 emails for speed)
+      autoScanInbox.mutateAsync({ projectId, maxEmails: 10 })
+        .then((result) => {
+          setScanProgress({
+            isScanning: false,
+            stage: 'complete',
+            message: result.message,
+            result: {
+              addedCount: result.results.summary.addedCount,
+              updatedCount: result.results.summary.updatedCount,
+              emailsProcessed: result.results.summary.emailsProcessed,
+            },
+          })
+          refetch()
+          refetchLog()
+          // Do NOT auto-dismiss - user must see the result
+        })
+        .catch((error) => {
+          setScanProgress({
+            isScanning: false,
+            stage: 'error',
+            message: error.message || 'Auto-scan failed',
+          })
+        })
+    }
+  }, [searchParams, projectId])
+
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [isExporting, setIsExporting] = useState(false)
-  const [showChangeSummary, setShowChangeSummary] = useState(true)
+  // showChangeSummary removed - summaries now always persist
   const [showScreenerConfig, setShowScreenerConfig] = useState(false)
   const [screenerQuestions, setScreenerQuestions] = useState<ScreenerQuestion[]>(
     projectData?.screenerConfig?.questions || []
@@ -48,39 +106,18 @@ export function TrackerPage() {
     screened: number
     total: number
   } | null>(null)
-  
+
   // Expert detail panel state
   const [selectedExpertId, setSelectedExpertId] = useState<string | null>(null)
-  
+
   // Sorting state
   const [sortConfig, setSortConfig] = useState<{
     column: string | null
     direction: 'asc' | 'desc'
   }>({ column: null, direction: 'asc' })
-  
-  // Column filters state
-  const [columnFilters, setColumnFilters] = useState<{
-    screening: string[]
-    conflict: string[]
-    status: string[]
-    name: string
-    employer: string
-    title: string
-    lead: string
-    interviewDateFrom: string
-    interviewDateTo: string
-  }>({
-    screening: [],
-    conflict: [],
-    status: [],
-    name: '',
-    employer: '',
-    title: '',
-    lead: '',
-    interviewDateFrom: '',
-    interviewDateTo: '',
-  })
-  
+
+  // Column filters removed - using global search and status filter only
+
   // Column widths state with localStorage persistence
   const LOCAL_STORAGE_KEY = `tracker-column-widths-${projectId}`
   const defaultColumnWidths = {
@@ -94,7 +131,7 @@ export function TrackerPage() {
     lead: 128,
     screening: 144,
   }
-  
+
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY)
@@ -108,42 +145,42 @@ export function TrackerPage() {
     }
     return defaultColumnWidths
   })
-  
+
   // Persist column widths to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(columnWidths))
     }
   }, [columnWidths, LOCAL_STORAGE_KEY])
-  
+
   // Resizing state
   const [resizingColumn, setResizingColumn] = useState<string | null>(null)
   const resizeStartX = useRef<number>(0)
   const resizeStartWidth = useRef<number>(0)
-  
+
   const handleResizeStart = useCallback((e: React.MouseEvent, column: string) => {
     e.preventDefault()
     setResizingColumn(column)
     resizeStartX.current = e.clientX
     resizeStartWidth.current = columnWidths[column] || defaultColumnWidths[column as keyof typeof defaultColumnWidths] || 100
   }, [columnWidths, defaultColumnWidths])
-  
+
   useEffect(() => {
     if (!resizingColumn) return
-    
+
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - resizeStartX.current
       const newWidth = Math.max(50, resizeStartWidth.current + diff) // Min width 50px
       setColumnWidths(prev => ({ ...prev, [resizingColumn]: newWidth }))
     }
-    
+
     const handleMouseUp = () => {
       setResizingColumn(null)
     }
-    
+
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
@@ -151,7 +188,7 @@ export function TrackerPage() {
   }, [resizingColumn])
 
   const experts = data?.experts || []
-  
+
   // Selected expert for detail panel (must be after experts declaration)
   const selectedExpert = experts.find(e => e.id === selectedExpertId) || null
 
@@ -159,11 +196,7 @@ export function TrackerPage() {
   const filteredExperts = useMemo(() => {
     let result = experts
 
-    // Status filter (column-level, replacing global)
-    if (columnFilters.status.length > 0) {
-      result = result.filter((e) => columnFilters.status.includes(e.status))
-    }
-    // Fallback for global status filter
+    // Global status filter
     if (statusFilter !== 'all') {
       result = result.filter((e) => e.status === statusFilter)
     }
@@ -178,63 +211,13 @@ export function TrackerPage() {
           e.canonicalTitle?.toLowerCase().includes(query)
       )
     }
-    
-    // Text filters
-    if (columnFilters.name) {
-      const query = columnFilters.name.toLowerCase()
-      result = result.filter((e) => e.canonicalName.toLowerCase().includes(query))
-    }
-    if (columnFilters.employer) {
-      const query = columnFilters.employer.toLowerCase()
-      result = result.filter((e) => (e.canonicalEmployer || '').toLowerCase().includes(query))
-    }
-    if (columnFilters.title) {
-      const query = columnFilters.title.toLowerCase()
-      result = result.filter((e) => (e.canonicalTitle || '').toLowerCase().includes(query))
-    }
-    if (columnFilters.lead) {
-      const query = columnFilters.lead.toLowerCase()
-      result = result.filter((e) => (e.assignedLead || '').toLowerCase().includes(query))
-    }
-    
-    // Date range filters - Interview Date
-    if (columnFilters.interviewDateFrom) {
-      result = result.filter((e) => {
-        if (!e.interviewDate) return false
-        return e.interviewDate >= columnFilters.interviewDateFrom
-      })
-    }
-    if (columnFilters.interviewDateTo) {
-      result = result.filter((e) => {
-        if (!e.interviewDate) return false
-        return e.interviewDate <= columnFilters.interviewDateTo
-      })
-    }
-    
-    // Column filters - Screening
-    if (columnFilters.screening.length > 0) {
-      result = result.filter((e) => {
-        if (columnFilters.screening.includes('none') && !e.aiScreeningGrade) return true
-        if (e.aiScreeningGrade && columnFilters.screening.includes(e.aiScreeningGrade)) return true
-        return false
-      })
-    }
-    
-    // Column filters - Conflict
-    if (columnFilters.conflict.length > 0) {
-      result = result.filter((e) => {
-        if (columnFilters.conflict.includes('none') && !e.conflictStatus) return true
-        if (e.conflictStatus && columnFilters.conflict.includes(e.conflictStatus)) return true
-        return false
-      })
-    }
-    
+
     // Sorting
     if (sortConfig.column) {
       result = [...result].sort((a, b) => {
         let aVal: any
         let bVal: any
-        
+
         switch (sortConfig.column) {
           case 'name':
             aVal = a.canonicalName.toLowerCase()
@@ -266,13 +249,13 @@ export function TrackerPage() {
             bVal = b.interviewDate || ''
             break
           case 'lead':
-            aVal = (a.assignedLead || '').toLowerCase()
-            bVal = (b.assignedLead || '').toLowerCase()
+            aVal = '' // Lead field not currently in Expert type
+            bVal = ''
             break
           default:
             return 0
         }
-        
+
         if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1
         if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1
         return 0
@@ -280,7 +263,7 @@ export function TrackerPage() {
     }
 
     return result
-  }, [experts, statusFilter, searchQuery, sortConfig, columnFilters])
+  }, [experts, statusFilter, searchQuery, sortConfig])
 
   const handleUpdate = async (expertId: string, field: keyof Expert, value: any) => {
     try {
@@ -318,14 +301,14 @@ export function TrackerPage() {
       alert('All experts have already been screened!')
       return
     }
-    
+
     setScreeningProgress({ isScreening: true, screened: 0, total: unscreenedCount })
-    
+
     try {
       const result = await screenAllExperts.mutateAsync({ projectId })
       setScreeningProgress({ isScreening: false, screened: result.screened, total: unscreenedCount })
       refetch()
-      
+
       // Clear progress after 3 seconds
       setTimeout(() => setScreeningProgress(null), 3000)
     } catch (error) {
@@ -334,11 +317,11 @@ export function TrackerPage() {
     }
   }
 
-  const unscreenedCount = useMemo(() => 
-    experts.filter(e => !e.aiScreeningGrade).length, 
+  const unscreenedCount = useMemo(() =>
+    experts.filter(e => !e.aiScreeningGrade).length,
     [experts]
   )
-  
+
   // Toggle sort for a column
   const toggleSort = (column: string) => {
     setSortConfig(prev => {
@@ -353,56 +336,14 @@ export function TrackerPage() {
       return { column, direction: 'asc' }
     })
   }
-  
-  // Toggle a multi-select filter value
-  const toggleFilter = (filterType: 'screening' | 'conflict' | 'status', value: string) => {
-    setColumnFilters(prev => {
-      const current = prev[filterType] as string[]
-      const newValues = current.includes(value)
-        ? current.filter(v => v !== value)
-        : [...current, value]
-      return { ...prev, [filterType]: newValues }
-    })
-  }
-  
-  // Set a text filter value
-  const setTextFilter = (filterType: 'name' | 'employer' | 'title' | 'lead', value: string) => {
-    setColumnFilters(prev => ({ ...prev, [filterType]: value }))
-  }
-  
-  // Set a date filter value
-  const setDateFilter = (filterType: 'interviewDateFrom' | 'interviewDateTo', value: string) => {
-    setColumnFilters(prev => ({ ...prev, [filterType]: value }))
-  }
-  
+
   // Clear all filters
   const clearFilters = () => {
-    setColumnFilters({ 
-      screening: [], 
-      conflict: [], 
-      status: [],
-      name: '',
-      employer: '',
-      title: '',
-      lead: '',
-      interviewDateFrom: '',
-      interviewDateTo: '',
-    })
     setStatusFilter('all')
     setSearchQuery('')
   }
-  
-  const hasActiveFilters = columnFilters.screening.length > 0 || 
-    columnFilters.conflict.length > 0 || 
-    columnFilters.status.length > 0 ||
-    columnFilters.name || 
-    columnFilters.employer || 
-    columnFilters.title || 
-    columnFilters.lead ||
-    columnFilters.interviewDateFrom ||
-    columnFilters.interviewDateTo ||
-    statusFilter !== 'all' || 
-    searchQuery
+
+  const hasActiveFilters = statusFilter !== 'all' || searchQuery
 
   if (isLoading) {
     return (
@@ -432,9 +373,9 @@ export function TrackerPage() {
         </div>
 
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => {
               setScreenerQuestions(projectData?.screenerConfig?.questions || [])
               setAutoScreenEnabled(projectData?.screenerConfig?.autoScreen || false)
@@ -444,9 +385,9 @@ export function TrackerPage() {
             <Settings2 className="w-4 h-4 mr-1" />
             Screener Config
           </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={handleScreenAll}
             disabled={screenAllExperts.isPending || unscreenedCount === 0}
             title={unscreenedCount === 0 ? 'All experts screened' : `Screen ${unscreenedCount} unscreened experts`}
@@ -494,6 +435,58 @@ export function TrackerPage() {
         isSaving={updateScreenerConfig.isPending}
       />
 
+      {/* Auto-Scan Progress Banner */}
+      {scanProgress && (
+        <div className={`border rounded-lg p-4 ${scanProgress.isScanning
+          ? 'bg-purple-50 border-purple-200'
+          : scanProgress.stage === 'error'
+            ? 'bg-red-50 border-red-200'
+            : 'bg-green-50 border-green-200'
+          }`}>
+          <div className="flex items-center gap-3">
+            {scanProgress.isScanning ? (
+              <>
+                <div className="relative">
+                  <Inbox className="w-5 h-5 text-purple-600" />
+                  <Loader2 className="w-3 h-3 text-purple-600 animate-spin absolute -bottom-1 -right-1" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-medium text-purple-900">Scanning Outlook Inbox...</p>
+                  <p className="text-sm text-purple-700">{scanProgress.message}</p>
+                </div>
+              </>
+            ) : scanProgress.stage === 'error' ? (
+              <>
+                <AlertCircle className="w-5 h-5 text-red-600" />
+                <div className="flex-1">
+                  <p className="font-medium text-red-900">Scan Failed</p>
+                  <p className="text-sm text-red-700">{scanProgress.message}</p>
+                </div>
+                <button
+                  onClick={() => setScanProgress(null)}
+                  className="ml-auto text-red-400 hover:text-red-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <>
+                <Mail className="w-5 h-5 text-green-600" />
+                <div className="flex-1">
+                  <p className="font-medium text-green-900">Inbox Scan Complete</p>
+                  <p className="text-sm text-green-700">
+                    {scanProgress.result?.emailsProcessed || 0} emails processed •
+                    {scanProgress.result?.addedCount || 0} experts added •
+                    {scanProgress.result?.updatedCount || 0} updated
+                  </p>
+                </div>
+                {/* No dismiss button - summary persists until next action */}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Screening Progress Banner */}
       {screeningProgress && (
         <div className={`border rounded-lg p-4 ${screeningProgress.isScreening ? 'bg-purple-50 border-purple-200' : 'bg-green-50 border-green-200'}`}>
@@ -527,8 +520,8 @@ export function TrackerPage() {
         </div>
       )}
 
-      {/* Change Summary Banner */}
-      {showChangeSummary && ingestionLogData?.log && ingestionLogData.log.status === 'completed' && (
+      {/* Change Summary Banner - always visible when log exists */}
+      {ingestionLogData?.log && ingestionLogData.log.status === 'completed' && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <div className="flex items-start justify-between">
             <div className="flex items-start gap-3 flex-1">
@@ -558,19 +551,18 @@ export function TrackerPage() {
                     </span>
                   )}
                 </div>
-                
+
                 {/* Detailed changes list */}
                 {ingestionLogData.log.entries && ingestionLogData.log.entries.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-blue-200">
                     <ul className="text-xs space-y-1.5 text-blue-800">
                       {ingestionLogData.log.entries.slice(0, 10).map((entry) => (
                         <li key={entry.id} className="flex items-start gap-2">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${
-                            entry.action === 'added' ? 'bg-green-100 text-green-700' :
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${entry.action === 'added' ? 'bg-green-100 text-green-700' :
                             entry.action === 'updated' ? 'bg-blue-100 text-blue-700' :
-                            entry.action === 'merged' ? 'bg-purple-100 text-purple-700' :
-                            'bg-amber-100 text-amber-700'
-                          }`}>
+                              entry.action === 'merged' ? 'bg-purple-100 text-purple-700' :
+                                'bg-amber-100 text-amber-700'
+                            }`}>
                             {entry.action}
                           </span>
                           <span className="font-medium">{entry.expertName || 'Unknown'}</span>
@@ -591,83 +583,7 @@ export function TrackerPage() {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  if (ingestionLogData.log) {
-                    await undoIngestion.mutateAsync({
-                      projectId: projectId!,
-                      logId: ingestionLogData.log.id,
-                    })
-                    refetch()
-                    refetchLog()
-                  }
-                }}
-                disabled={undoIngestion.isPending}
-              >
-                {undoIngestion.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                ) : (
-                  <Undo2 className="w-4 h-4 mr-1" />
-                )}
-                Undo
-              </Button>
-              <button
-                onClick={() => setShowChangeSummary(false)}
-                className="text-blue-400 hover:text-blue-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Undone Ingestion Banner (with Redo) */}
-      {showChangeSummary && ingestionLogData?.log && ingestionLogData.log.status === 'undone' && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-          <div className="flex items-start justify-between">
-            <div className="flex items-start gap-3 flex-1">
-              <Undo2 className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="font-medium text-amber-900">Last Ingestion Undone</p>
-                <p className="text-sm text-amber-700 mt-1">
-                  The previous ingestion was reverted. Click Redo to restore the changes.
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  if (ingestionLogData.log) {
-                    await redoIngestion.mutateAsync({
-                      projectId: projectId!,
-                      logId: ingestionLogData.log.id,
-                    })
-                    refetch()
-                    refetchLog()
-                  }
-                }}
-                disabled={redoIngestion.isPending}
-              >
-                {redoIngestion.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                ) : (
-                  <Redo2 className="w-4 h-4 mr-1" />
-                )}
-                Redo
-              </Button>
-              <button
-                onClick={() => setShowChangeSummary(false)}
-                className="text-amber-400 hover:text-amber-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+            {/* Undo/Redo buttons removed - use delete instead */}
           </div>
         </div>
       )}
@@ -700,14 +616,62 @@ export function TrackerPage() {
             <SelectItem value="conflict">Conflict</SelectItem>
           </SelectContent>
         </Select>
-        
+
         {hasActiveFilters && (
           <Button variant="ghost" size="sm" onClick={clearFilters} className="text-gray-500">
             <X className="w-4 h-4 mr-1" />
             Clear filters
           </Button>
         )}
+
+        {selectedExperts.size > 0 && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowDeleteConfirm(true)}
+          >
+            <Trash2 className="w-4 h-4 mr-1" />
+            Delete {selectedExperts.size} Selected
+          </Button>
+        )}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {selectedExperts.size} Expert{selectedExperts.size > 1 ? 's' : ''}?</DialogTitle>
+            <DialogDescription>
+              This action cannot be undone. The selected experts will be permanently deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                await bulkDeleteExperts.mutateAsync({
+                  projectId: projectId!,
+                  expertIds: Array.from(selectedExperts),
+                })
+                setSelectedExperts(new Set())
+                setShowDeleteConfirm(false)
+                refetch()
+              }}
+              disabled={bulkDeleteExperts.isPending}
+            >
+              {bulkDeleteExperts.isPending ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Trash2 className="w-4 h-4 mr-1" />
+              )}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Table */}
       {filteredExperts.length === 0 ? (
@@ -728,171 +692,154 @@ export function TrackerPage() {
           <Table className="min-w-[1200px]" style={{ tableLayout: 'fixed' }}>
             <TableHeader>
               <TableRow>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={selectedExperts.size === filteredExperts.length && filteredExperts.length > 0}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setSelectedExperts(new Set(filteredExperts.map(e => e.id)))
+                      } else {
+                        setSelectedExperts(new Set())
+                      }
+                    }}
+                  />
+                </TableHead>
+                <TableHead
+                  className="relative overflow-hidden"
                   style={{ width: columnWidths.details }}
                 >
                   <span className="text-xs text-gray-500">Details</span>
-                  <div 
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
                     onMouseDown={(e) => handleResizeStart(e, 'details')}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.name }}
+                  onClick={() => toggleSort('name')}
                 >
-                  <TextFilterHeader 
-                    column="name" 
-                    label="Name" 
-                    sortConfig={sortConfig} 
-                    onSort={toggleSort}
-                    filterValue={columnFilters.name}
-                    onFilterChange={(val) => setTextFilter('name', val)}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Name</span>
+                    {sortConfig.column === 'name' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'name')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'name'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.employer }}
+                  onClick={() => toggleSort('employer')}
                 >
-                  <TextFilterHeader 
-                    column="employer" 
-                    label="Employer" 
-                    sortConfig={sortConfig} 
-                    onSort={toggleSort}
-                    filterValue={columnFilters.employer}
-                    onFilterChange={(val) => setTextFilter('employer', val)}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Employer</span>
+                    {sortConfig.column === 'employer' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'employer')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'employer'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.title }}
+                  onClick={() => toggleSort('title')}
                 >
-                  <TextFilterHeader 
-                    column="title" 
-                    label="Title" 
-                    sortConfig={sortConfig} 
-                    onSort={toggleSort}
-                    filterValue={columnFilters.title}
-                    onFilterChange={(val) => setTextFilter('title', val)}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Title</span>
+                    {sortConfig.column === 'title' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'title')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'title'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.status }}
+                  onClick={() => toggleSort('status')}
                 >
-                  <FilterableHeader
-                    column="status"
-                    label="Status"
-                    sortConfig={sortConfig}
-                    onSort={toggleSort}
-                    filterValues={columnFilters.status}
-                    onFilter={(val) => toggleFilter('status', val)}
-                    filterOptions={[
-                      { value: 'new', label: 'New' },
-                      { value: 'outreached', label: 'Outreached' },
-                      { value: 'scheduled', label: 'Scheduled' },
-                      { value: 'completed', label: 'Completed' },
-                      { value: 'passed', label: 'Passed' },
-                    ]}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Status</span>
+                    {sortConfig.column === 'status' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'status')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'status'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.conflict }}
+                  onClick={() => toggleSort('conflict')}
                 >
-                  <FilterableHeader
-                    column="conflict"
-                    label="Conflict"
-                    sortConfig={sortConfig}
-                    onSort={toggleSort}
-                    filterValues={columnFilters.conflict}
-                    onFilter={(val) => toggleFilter('conflict', val)}
-                    filterOptions={[
-                      { value: 'none', label: 'None' },
-                      { value: 'cleared', label: 'Cleared' },
-                      { value: 'pending', label: 'Pending' },
-                      { value: 'conflict', label: 'Conflict' },
-                    ]}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Conflict</span>
+                    {sortConfig.column === 'conflict' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'conflict')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'conflict'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.interviewDate }}
+                  onClick={() => toggleSort('interviewDate')}
                 >
-                  <DateRangeFilterHeader 
-                    column="interviewDate" 
-                    label="Interview Date" 
-                    sortConfig={sortConfig} 
-                    onSort={toggleSort}
-                    fromValue={columnFilters.interviewDateFrom}
-                    toValue={columnFilters.interviewDateTo}
-                    onFromChange={(val) => setDateFilter('interviewDateFrom', val)}
-                    onToChange={(val) => setDateFilter('interviewDateTo', val)}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Interview</span>
+                    {sortConfig.column === 'interviewDate' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'interviewDate')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'interviewDate'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.lead }}
+                  onClick={() => toggleSort('lead')}
                 >
-                  <TextFilterHeader 
-                    column="lead" 
-                    label="Lead" 
-                    sortConfig={sortConfig} 
-                    onSort={toggleSort}
-                    filterValue={columnFilters.lead}
-                    onFilterChange={(val) => setTextFilter('lead', val)}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>Lead</span>
+                    {sortConfig.column === 'lead' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'lead')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'lead'); }}
                   />
                 </TableHead>
-                <TableHead 
-                  className="relative overflow-hidden" 
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.screening }}
+                  onClick={() => toggleSort('screening')}
                 >
-                  <FilterableHeader
-                    column="screening"
-                    label="AI Screening"
-                    sortConfig={sortConfig}
-                    onSort={toggleSort}
-                    filterValues={columnFilters.screening}
-                    onFilter={(val) => toggleFilter('screening', val)}
-                    filterOptions={[
-                      { value: 'strong', label: 'Strong' },
-                      { value: 'mixed', label: 'Mixed' },
-                      { value: 'weak', label: 'Weak' },
-                      { value: 'none', label: 'Not screened' },
-                    ]}
-                  />
-                  <div 
+                  <div className="flex items-center gap-1">
+                    <span>AI Screening</span>
+                    {sortConfig.column === 'screening' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
                     className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
-                    onMouseDown={(e) => handleResizeStart(e, 'screening')}
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'screening'); }}
                   />
                 </TableHead>
               </TableRow>
@@ -906,6 +853,16 @@ export function TrackerPage() {
                   projectId={projectId!}
                   onScreeningComplete={() => refetch()}
                   onViewDetails={() => setSelectedExpertId(expert.id)}
+                  isSelected={selectedExperts.has(expert.id)}
+                  onSelectChange={(checked) => {
+                    const newSelected = new Set(selectedExperts)
+                    if (checked) {
+                      newSelected.add(expert.id)
+                    } else {
+                      newSelected.delete(expert.id)
+                    }
+                    setSelectedExperts(newSelected)
+                  }}
                 />
               ))}
             </TableBody>
@@ -930,12 +887,16 @@ function ExpertRow({
   projectId,
   onScreeningComplete,
   onViewDetails,
+  isSelected,
+  onSelectChange,
 }: {
   expert: Expert
   onUpdate: (expertId: string, field: keyof Expert, value: any) => Promise<void>
   projectId: string
   onScreeningComplete?: () => void
   onViewDetails?: () => void
+  isSelected?: boolean
+  onSelectChange?: (checked: boolean) => void
 }) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(expert.canonicalName)
@@ -963,6 +924,14 @@ function ExpertRow({
 
   return (
     <TableRow className="group">
+      {/* Selection Checkbox */}
+      <TableCell className="p-2">
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={(checked) => onSelectChange?.(!!checked)}
+        />
+      </TableCell>
+
       {/* View Details Button */}
       <TableCell className="p-2 overflow-hidden">
         <Button
@@ -1082,13 +1051,12 @@ function ExpertRow({
                     ? 'secondary'
                     : 'outline'
               }
-              className={`cursor-pointer hover:opacity-80 ${
-                expert.aiScreeningGrade === 'strong' 
-                  ? 'bg-green-600' 
-                  : expert.aiScreeningGrade === 'mixed' 
-                    ? 'bg-yellow-500' 
-                    : 'bg-red-500 text-white'
-              }`}
+              className={`cursor-pointer hover:opacity-80 ${expert.aiScreeningGrade === 'strong'
+                ? 'bg-green-600'
+                : expert.aiScreeningGrade === 'mixed'
+                  ? 'bg-yellow-500'
+                  : 'bg-red-500 text-white'
+                }`}
               onClick={() => setShowScreeningDetail(true)}
             >
               {expert.aiScreeningGrade}
@@ -1137,313 +1105,7 @@ function ExpertRow({
   )
 }
 
-/**
- * Sortable Column Header
- */
-function SortableHeader({
-  column,
-  label,
-  sortConfig,
-  onSort,
-  className,
-}: {
-  column: string
-  label: string
-  sortConfig: { column: string | null; direction: 'asc' | 'desc' }
-  onSort: (column: string) => void
-  className?: string
-}) {
-  const isActive = sortConfig.column === column
-  
-  return (
-    <TableHead className={className}>
-      <button
-        onClick={() => onSort(column)}
-        className="flex items-center gap-1 hover:text-gray-900 transition-colors w-full text-left"
-      >
-        {label}
-        {isActive ? (
-          sortConfig.direction === 'asc' ? (
-            <ArrowUp className="w-3 h-3 text-purple-600" />
-          ) : (
-            <ArrowDown className="w-3 h-3 text-purple-600" />
-          )
-        ) : (
-          <ArrowUpDown className="w-3 h-3 text-gray-400" />
-        )}
-      </button>
-    </TableHead>
-  )
-}
-
-/**
- * Filterable Column Header with Sort + Filter
- */
-function FilterableHeader({
-  column,
-  label,
-  sortConfig,
-  onSort,
-  filterValues,
-  onFilter,
-  filterOptions,
-}: {
-  column: string
-  label: string
-  sortConfig: { column: string | null; direction: 'asc' | 'desc' }
-  onSort: (column: string) => void
-  filterValues: string[]
-  onFilter: (value: string) => void
-  filterOptions: { value: string; label: string }[]
-}) {
-  const [showFilter, setShowFilter] = useState(false)
-  const isActive = sortConfig.column === column
-  const hasFilter = filterValues.length > 0
-  
-  return (
-    <div className="relative">
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => onSort(column)}
-          className="flex items-center gap-1 hover:text-gray-900 transition-colors"
-        >
-          {label}
-          {isActive ? (
-            sortConfig.direction === 'asc' ? (
-              <ArrowUp className="w-3 h-3 text-purple-600" />
-            ) : (
-              <ArrowDown className="w-3 h-3 text-purple-600" />
-            )
-          ) : (
-            <ArrowUpDown className="w-3 h-3 text-gray-400" />
-          )}
-        </button>
-        <button
-          onClick={() => setShowFilter(!showFilter)}
-          className={`p-0.5 rounded hover:bg-gray-100 ${hasFilter ? 'text-purple-600' : 'text-gray-400'}`}
-        >
-          <Filter className="w-3 h-3" />
-          {hasFilter && (
-            <span className="absolute -top-1 -right-1 w-2 h-2 bg-purple-600 rounded-full" />
-          )}
-        </button>
-      </div>
-      
-      {showFilter && (
-        <>
-          <div 
-            className="fixed inset-0 z-10" 
-            onClick={() => setShowFilter(false)} 
-          />
-          <div className="absolute top-full left-0 mt-1 z-20 bg-white border rounded-lg shadow-lg p-2 min-w-[140px]">
-            {filterOptions.map((opt) => (
-              <label
-                key={opt.value}
-                className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded cursor-pointer text-sm"
-              >
-                <Checkbox
-                  checked={filterValues.includes(opt.value)}
-                  onCheckedChange={() => onFilter(opt.value)}
-                  className="w-4 h-4"
-                />
-                {opt.label}
-              </label>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-/**
- * Text Filter Header - Column header with text search filter
- */
-function TextFilterHeader({
-  column,
-  label,
-  sortConfig,
-  onSort,
-  filterValue,
-  onFilterChange,
-  className,
-}: {
-  column: string
-  label: string
-  sortConfig: { column: string | null; direction: 'asc' | 'desc' }
-  onSort: (column: string) => void
-  filterValue: string
-  onFilterChange: (value: string) => void
-  className?: string
-}) {
-  const [showFilter, setShowFilter] = useState(false)
-  const isSorted = sortConfig.column === column
-  const hasFilter = filterValue.length > 0
-  
-  return (
-    <div className={`relative ${className}`}>
-      <div className="flex items-center gap-1">
-        <span className="text-xs font-medium truncate">{label}</span>
-        <button
-          onClick={() => onSort(column)}
-          className={`p-0.5 rounded hover:bg-gray-100 ${isSorted ? 'text-purple-600' : 'text-gray-400'}`}
-        >
-          {isSorted ? (
-            sortConfig.direction === 'asc' ? (
-              <ArrowUp className="w-3 h-3 text-purple-600" />
-            ) : (
-              <ArrowDown className="w-3 h-3 text-purple-600" />
-            )
-          ) : (
-            <ArrowUpDown className="w-3 h-3 text-gray-400" />
-          )}
-        </button>
-        <button
-          onClick={() => setShowFilter(!showFilter)}
-          className={`p-0.5 rounded hover:bg-gray-100 relative ${hasFilter ? 'text-purple-600' : 'text-gray-400'}`}
-        >
-          <Filter className="w-3 h-3" />
-          {hasFilter && (
-            <span className="absolute -top-1 -right-1 w-2 h-2 bg-purple-600 rounded-full" />
-          )}
-        </button>
-      </div>
-      
-      {showFilter && (
-        <>
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setShowFilter(false)}
-          />
-          <div className="absolute top-full left-0 mt-1 bg-white border rounded-md shadow-lg p-2 z-20 min-w-[160px]">
-            <Input
-              type="text"
-              placeholder={`Filter ${label.toLowerCase()}...`}
-              value={filterValue}
-              onChange={(e) => onFilterChange(e.target.value)}
-              className="h-7 text-xs"
-              autoFocus
-            />
-            {hasFilter && (
-              <button
-                onClick={() => {
-                  onFilterChange('')
-                  setShowFilter(false)
-                }}
-                className="mt-2 text-xs text-gray-500 hover:text-gray-700"
-              >
-                Clear filter
-              </button>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-/**
- * Date Range Filter Header - Column header with date range filter (before/after)
- */
-function DateRangeFilterHeader({
-  column,
-  label,
-  sortConfig,
-  onSort,
-  fromValue,
-  toValue,
-  onFromChange,
-  onToChange,
-  className,
-}: {
-  column: string
-  label: string
-  sortConfig: { column: string | null; direction: 'asc' | 'desc' }
-  onSort: (column: string) => void
-  fromValue: string
-  toValue: string
-  onFromChange: (value: string) => void
-  onToChange: (value: string) => void
-  className?: string
-}) {
-  const [showFilter, setShowFilter] = useState(false)
-  const isSorted = sortConfig.column === column
-  const hasFilter = fromValue || toValue
-  
-  return (
-    <div className={`relative ${className}`}>
-      <div className="flex items-center gap-1">
-        <span className="text-xs font-medium truncate">{label}</span>
-        <button
-          onClick={() => onSort(column)}
-          className={`p-0.5 rounded hover:bg-gray-100 ${isSorted ? 'text-purple-600' : 'text-gray-400'}`}
-        >
-          {isSorted ? (
-            sortConfig.direction === 'asc' ? (
-              <ArrowUp className="w-3 h-3 text-purple-600" />
-            ) : (
-              <ArrowDown className="w-3 h-3 text-purple-600" />
-            )
-          ) : (
-            <ArrowUpDown className="w-3 h-3 text-gray-400" />
-          )}
-        </button>
-        <button
-          onClick={() => setShowFilter(!showFilter)}
-          className={`p-0.5 rounded hover:bg-gray-100 relative ${hasFilter ? 'text-purple-600' : 'text-gray-400'}`}
-        >
-          <Filter className="w-3 h-3" />
-          {hasFilter && (
-            <span className="absolute -top-1 -right-1 w-2 h-2 bg-purple-600 rounded-full" />
-          )}
-        </button>
-      </div>
-      
-      {showFilter && (
-        <>
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setShowFilter(false)}
-          />
-          <div className="absolute top-full left-0 mt-1 bg-white border rounded-md shadow-lg p-3 z-20 min-w-[200px]">
-            <div className="space-y-2">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">From (after)</label>
-                <Input
-                  type="date"
-                  value={fromValue}
-                  onChange={(e) => onFromChange(e.target.value)}
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">To (before)</label>
-                <Input
-                  type="date"
-                  value={toValue}
-                  onChange={(e) => onToChange(e.target.value)}
-                  className="h-7 text-xs"
-                />
-              </div>
-            </div>
-            {hasFilter && (
-              <button
-                onClick={() => {
-                  onFromChange('')
-                  onToChange('')
-                  setShowFilter(false)
-                }}
-                className="mt-3 text-xs text-gray-500 hover:text-gray-700"
-              >
-                Clear dates
-              </button>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
+/* Filter header components removed - using simple sortable headers inline */
 
 /**
  * Screener Config Dialog - Configure screener questions and rubric
@@ -1624,16 +1286,16 @@ function ScreeningDetailModal({
   expert: Expert
 }) {
   // Parse missing info if it's a JSON string
-  const missingInfo = expert.aiScreeningMissingInfo 
-    ? (typeof expert.aiScreeningMissingInfo === 'string' 
-        ? JSON.parse(expert.aiScreeningMissingInfo) 
-        : expert.aiScreeningMissingInfo)
+  const missingInfo = expert.aiScreeningMissingInfo
+    ? (typeof expert.aiScreeningMissingInfo === 'string'
+      ? JSON.parse(expert.aiScreeningMissingInfo)
+      : expert.aiScreeningMissingInfo)
     : null
 
-  const gradeColor = expert.aiScreeningGrade === 'strong' 
-    ? 'text-green-600 bg-green-50 border-green-200' 
-    : expert.aiScreeningGrade === 'mixed' 
-      ? 'text-yellow-600 bg-yellow-50 border-yellow-200' 
+  const gradeColor = expert.aiScreeningGrade === 'strong'
+    ? 'text-green-600 bg-green-50 border-green-200'
+    : expert.aiScreeningGrade === 'mixed'
+      ? 'text-yellow-600 bg-yellow-50 border-yellow-200'
       : 'text-red-600 bg-red-50 border-red-200'
 
   return (

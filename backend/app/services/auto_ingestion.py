@@ -41,14 +41,18 @@ class AutoIngestionService:
         network: Optional[str],
         project_hypothesis: str,
         screener_config: Optional[dict],
-        auto_merge_threshold: float = 0.85
+        auto_merge_threshold: float = 0.85,
+        skip_log: bool = False
     ) -> dict:
         """
         Perform complete auto-ingestion: extract, commit, dedupe, and log.
         
+        Args:
+            skip_log: If True, skip creating ingestion log (caller will create unified log)
+        
         Returns:
             dict with:
-            - ingestionLogId: ID for undo operations
+            - ingestionLogId: ID for undo operations (None if skip_log=True)
             - summary: What changed (added, updated, merged, needsReview)
             - experts: List of affected experts
         """
@@ -185,7 +189,7 @@ class AutoIngestionService:
                     "This email appears to contain quoted/repeated content from a previous thread."
                 )
         
-        # Step 7: Create ingestion log
+        # Step 7: Build summary
         summary = {
             "addedCount": len(changes["added"]),
             "updatedCount": len(changes["updated"]),
@@ -204,6 +208,17 @@ class AutoIngestionService:
             "updatedExperts": changes["updated"]
         }
         
+        # If skip_log is True, caller will create unified log
+        if skip_log:
+            return {
+                "ingestionLogId": None,
+                "emailId": email["id"],
+                "summary": summary,
+                "changes": changes,
+                "snapshot": snapshot
+            }
+        
+        # Create ingestion log
         log = await ingestion_log.create_ingestion_log(
             db,
             project_id=project_id,
@@ -605,156 +620,9 @@ class AutoIngestionService:
             # Don't fail the whole ingestion if screening fails
             print(f"Warning: Screening failed for expert {expert_id}: {e}")
 
-    async def undo_ingestion(self, db: databases.Database, log: dict) -> dict:
-        """
-        Undo a previous ingestion operation.
-        
-        This will:
-        1. Delete experts that were created
-        2. Revert merged experts (if possible)
-        3. Revert field updates using previousValues
-        
-        Note: This is a best-effort undo. Some operations may not be fully reversible.
-        """
-        snapshot = log.get("snapshot", {})
-        entries = log.get("entries", [])
-        undone = {
-            "deletedExperts": [],
-            "revertedMerges": [],
-            "revertedUpdates": [],
-            "errors": []
-        }
-        
-        # Delete created experts
-        for expert_id in snapshot.get("createdExpertIds", []):
-            try:
-                success = await experts.delete_expert(db, expert_id)
-                if success:
-                    undone["deletedExperts"].append(expert_id)
-            except Exception as e:
-                undone["errors"].append(f"Failed to delete expert {expert_id}: {e}")
-        
-        # Revert field updates using previousValues from entries
-        for entry in entries:
-            if entry.get("action") == "updated" and entry.get("previousValues"):
-                expert_id = entry.get("expertId")
-                previous_values = entry.get("previousValues")
-                try:
-                    # Build update dict mapping previous value keys to Expert fields
-                    revert_updates = {}
-                    field_mapping = {
-                        "employer": "canonicalEmployer",
-                        "title": "canonicalTitle",
-                        "conflictStatus": "conflictStatus",
-                        "conflictId": "conflictId",
-                        "status": "status"
-                    }
-                    for field, value in previous_values.items():
-                        db_field = field_mapping.get(field, field)
-                        revert_updates[db_field] = value
-                    
-                    if revert_updates:
-                        await experts.update_expert(db, expert_id, **revert_updates)
-                        undone["revertedUpdates"].append({
-                            "expertId": expert_id,
-                            "expertName": entry.get("expertName"),
-                            "fieldsReverted": list(previous_values.keys())
-                        })
-                except Exception as e:
-                    undone["errors"].append(f"Failed to revert updates for expert {expert_id}: {e}")
-        
-        # Note: Merged experts cannot be easily unmerged as the merged expert is deleted
-        # We would need versioning/soft-delete to support this fully
-        for merged in snapshot.get("mergedPairs", []):
-            undone["errors"].append(
-                f"Cannot undo merge: {merged.get('mergedExpertId')} -> {merged.get('keptExpertId')}. "
-                "Merged expert data was consolidated."
-            )
-        
-        # Mark log as undone
-        await ingestion_log.mark_ingestion_undone(db, log["id"])
-        
-        total_reverted = len(undone['deletedExperts']) + len(undone['revertedUpdates'])
-        return {
-            "success": True,
-            "undone": undone,
-            "message": f"Reverted {total_reverted} changes ({len(undone['deletedExperts'])} experts deleted, {len(undone['revertedUpdates'])} experts reverted). {len(undone['errors'])} operations could not be undone."
-        }
-
-    async def redo_ingestion(self, db: databases.Database, log: dict) -> dict:
-        """
-        Redo a previously undone ingestion operation.
-        
-        This will:
-        1. Re-apply field updates using newValues
-        
-        Note: 
-        - Deleted experts cannot be recreated (they would need to be re-extracted)
-        - Merges cannot be redone without re-running the merge logic
-        """
-        entries = log.get("entries", [])
-        redone = {
-            "reappliedUpdates": [],
-            "cannotRedo": [],
-            "errors": []
-        }
-        
-        # Re-apply field updates using newValues from entries
-        for entry in entries:
-            if entry.get("action") == "updated" and entry.get("newValues"):
-                expert_id = entry.get("expertId")
-                new_values = entry.get("newValues")
-                try:
-                    # Check if expert still exists
-                    expert = await experts.get_expert(db, expert_id)
-                    if not expert:
-                        redone["errors"].append(f"Expert {expert_id} no longer exists")
-                        continue
-                    
-                    # Build update dict mapping new value keys to Expert fields
-                    redo_updates = {}
-                    field_mapping = {
-                        "employer": "canonicalEmployer",
-                        "title": "canonicalTitle",
-                        "conflictStatus": "conflictStatus",
-                        "conflictId": "conflictId",
-                        "status": "status"
-                    }
-                    for field, value in new_values.items():
-                        db_field = field_mapping.get(field, field)
-                        redo_updates[db_field] = value
-                    
-                    if redo_updates:
-                        await experts.update_expert(db, expert_id, **redo_updates)
-                        redone["reappliedUpdates"].append({
-                            "expertId": expert_id,
-                            "expertName": entry.get("expertName"),
-                            "fieldsReapplied": list(new_values.keys())
-                        })
-                except Exception as e:
-                    redone["errors"].append(f"Failed to redo updates for expert {expert_id}: {e}")
-            
-            elif entry.get("action") == "added":
-                # Cannot recreate deleted experts without re-extracting
-                redone["cannotRedo"].append({
-                    "action": "added",
-                    "expertName": entry.get("expertName"),
-                    "reason": "Deleted experts must be re-extracted from email"
-                })
-            
-            elif entry.get("action") == "merged":
-                # Cannot redo merge without re-running merge logic
-                redone["cannotRedo"].append({
-                    "action": "merged",
-                    "expertId": entry.get("expertId"),
-                    "reason": "Merges must be re-triggered manually"
-                })
-        
-        # Mark log as redone (status = 'completed')
-        await ingestion_log.mark_ingestion_redone(db, log["id"])
-        
-        return {
-            "success": True,
-            "redone": redone,
-            "message": f"Reapplied {len(redone['reappliedUpdates'])} updates. {len(redone['cannotRedo'])} operations cannot be redone. {len(redone['errors'])} errors."
-        }
+    # NOTE: undo_ingestion and redo_ingestion methods REMOVED
+    # These were fundamentally broken:
+    # - Undo deleted experts but left stale log entries showing "added"
+    # - Redo could not recreate deleted experts
+    # - Multiple ingestion sources created conflicting logs
+    # Users should use explicit delete instead (multi-select delete in UI)

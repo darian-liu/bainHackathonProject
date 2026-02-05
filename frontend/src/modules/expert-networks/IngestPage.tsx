@@ -4,9 +4,11 @@
  */
 
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Undo2, Sparkles } from 'lucide-react'
-import { useAutoIngest, useUndoIngestion, useProject, useScreenAllExperts } from './api'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Sparkles, Mail, Settings, Inbox, FileText } from 'lucide-react'
+import { useAutoIngest, useProject, useScreenAllExperts, useAutoScanInbox } from './api'
+import { useQuery } from '@tanstack/react-query'
+import { outlookApi } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
@@ -19,10 +21,11 @@ export function IngestPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
   const autoIngest = useAutoIngest()
-  const undoIngestion = useUndoIngestion()
+  const autoScanInbox = useAutoScanInbox()
   const { data: projectData } = useProject(projectId!)
   const screenAllExperts = useScreenAllExperts()
 
+  const [ingestMode, setIngestMode] = useState<'select' | 'paste' | 'scanning'>('select')
   const [emailText, setEmailText] = useState('')
   const [network, setNetwork] = useState<string>('')
   const [result, setResult] = useState<AutoIngestResult | null>(null)
@@ -34,6 +37,12 @@ export function IngestPage() {
 
   const autoScreenEnabled = projectData?.screenerConfig?.autoScreen || false
 
+  // Outlook connection status
+  const { data: outlookStatus } = useQuery({
+    queryKey: ['outlook-status'],
+    queryFn: outlookApi.getStatus,
+  })
+
   const handleIngest = async () => {
     if (!projectId || !emailText.trim()) return
 
@@ -44,7 +53,7 @@ export function IngestPage() {
         network: network || undefined,
       })
       setResult(ingestResult)
-      
+
       // Auto-screen if enabled and there were added/updated experts
       if (autoScreenEnabled && (ingestResult.summary.addedCount > 0 || ingestResult.summary.updatedCount > 0)) {
         setIsAutoScreening(true)
@@ -62,41 +71,145 @@ export function IngestPage() {
     }
   }
 
-  const handleUndo = async () => {
-    if (!projectId || !result) return
+  // handleUndo removed - undo was fundamentally broken
+  // Users should use delete from the tracker page instead
+
+  const handleAutoScan = async () => {
+    if (!projectId) return
+
+    setIngestMode('scanning')
 
     try {
-      await undoIngestion.mutateAsync({
-        projectId,
-        logId: result.ingestionLogId,
-      })
-      setResult(null)
-      setEmailText('')
+      // Navigate to tracker immediately with scanning state
+      navigate(`/expert-networks/${projectId}/tracker?scanning=true`)
+
+      // Start the scan (this will be picked up by TrackerPage)
+      await autoScanInbox.mutateAsync({ projectId, maxEmails: 50 })
     } catch (error) {
-      console.error('Undo failed:', error)
+      console.error('Auto-scan failed:', error)
+      // Navigate back with error
+      navigate(`/expert-networks/${projectId}/ingest?scan_error=true`)
     }
   }
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-purple-600" />
-          AI Extract & Screen
-        </h1>
-        <p className="text-gray-600">
-          Paste expert network emails. AI extracts experts, validates data, and runs smart screening.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Sparkles className="w-6 h-6 text-purple-600" />
+            AI Extract & Screen
+          </h1>
+          <p className="text-gray-600">
+            Ingest expert network emails. AI extracts experts, validates data, and runs smart screening.
+          </p>
+        </div>
+        {/* Outlook Connection Status */}
+        <div className="flex items-center gap-2 text-sm">
+          <Mail className="w-4 h-4" />
+          {outlookStatus?.connected ? (
+            <span className="text-green-600">Outlook: {outlookStatus.userEmail}</span>
+          ) : (
+            <Link to="/settings" className="text-muted-foreground hover:text-blue-600 flex items-center gap-1">
+              <Settings className="w-3 h-3" />
+              Connect Outlook
+            </Link>
+          )}
+        </div>
       </div>
 
-      {!result ? (
+      {!result && ingestMode === 'select' ? (
+        /* Ingestion Mode Selection */
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* Auto-scan Inbox Option */}
+          <Card
+            className={`cursor-pointer transition-all hover:border-purple-400 hover:shadow-md ${!outlookStatus?.connected ? 'opacity-60' : ''
+              }`}
+            onClick={() => outlookStatus?.connected && handleAutoScan()}
+          >
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Inbox className="w-5 h-5 text-purple-600" />
+                Auto-scan Inbox
+                <Badge variant="secondary" className="ml-2">Recommended</Badge>
+              </CardTitle>
+              <CardDescription>
+                Scans recent Outlook emails from expert networks (AlphaSights, Guidepoint, GLG, etc.).
+                May take a moment.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {outlookStatus?.connected ? (
+                <Button
+                  className="w-full"
+                  onClick={(e) => { e.stopPropagation(); handleAutoScan(); }}
+                  disabled={autoScanInbox.isPending}
+                >
+                  {autoScanInbox.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Starting scan...
+                    </>
+                  ) : (
+                    <>
+                      <Inbox className="w-4 h-4 mr-2" />
+                      Scan Inbox Now
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Link to="/settings">
+                  <Button variant="outline" className="w-full">
+                    <Settings className="w-4 h-4 mr-2" />
+                    Connect Outlook First
+                  </Button>
+                </Link>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Manual Paste Option */}
+          <Card
+            className="cursor-pointer transition-all hover:border-blue-400 hover:shadow-md"
+            onClick={() => setIngestMode('paste')}
+          >
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" />
+                Paste Email Manually
+              </CardTitle>
+              <CardDescription>
+                Copy and paste email content directly. Works with any email source.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={(e) => { e.stopPropagation(); setIngestMode('paste'); }}
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                Paste Email
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      ) : !result && ingestMode === 'paste' ? (
+        /* Manual Paste Mode */
         <Card>
           <CardHeader>
-            <CardTitle>Paste Email Content</CardTitle>
-            <CardDescription>
-              Paste emails from AlphaSights, Guidepoint, GLG, or other expert networks.
-              AI will extract expert profiles, validate data, deduplicate, and run smart screening.
-            </CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Paste Email Content</CardTitle>
+                <CardDescription>
+                  Paste emails from AlphaSights, Guidepoint, GLG, or other expert networks.
+                  AI will extract expert profiles, validate data, deduplicate, and run smart screening.
+                </CardDescription>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setIngestMode('select')}>
+                ← Back
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
@@ -146,7 +259,7 @@ export function IngestPage() {
             </Button>
           </CardContent>
         </Card>
-      ) : (
+      ) : result ? (
         <div className="space-y-4">
           {/* No-Op Summary (duplicate/repeated content) */}
           {result.summary.isNoOp ? (
@@ -295,50 +408,38 @@ export function IngestPage() {
                         <li key={idx}>
                           Auto-merged duplicate (score: {Math.round(change.score! * 100)}%)
                         </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
-              {result.changes.needsReview.length > 0 && (
-                <div className="space-y-2 bg-amber-50 p-3 rounded-lg border border-amber-200">
-                  <h4 className="font-medium text-sm text-amber-800 flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4" />
-                    Items Needing Review:
-                  </h4>
-                  <ul className="text-sm text-amber-700 space-y-1">
-                    {result.changes.needsReview.map((change, idx) => (
-                      <li key={idx}>{change.reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                {result.changes.needsReview.length > 0 && (
+                  <div className="space-y-2 bg-amber-50 p-3 rounded-lg border border-amber-200">
+                    <h4 className="font-medium text-sm text-amber-800 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4" />
+                      Items Needing Review:
+                    </h4>
+                    <ul className="text-sm text-amber-700 space-y-1">
+                      {result.changes.needsReview.map((change, idx) => (
+                        <li key={idx}>{change.reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
-              {result.summary.extractionNotes && result.summary.extractionNotes.length > 0 && (
-                <div className="space-y-2 text-sm text-gray-600">
-                  <h4 className="font-medium">Notes:</h4>
-                  <ul className="list-disc list-inside">
-                    {result.summary.extractionNotes.map((note, idx) => (
-                      <li key={idx}>{note}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                {result.summary.extractionNotes && result.summary.extractionNotes.length > 0 && (
+                  <div className="space-y-2 text-sm text-gray-600">
+                    <h4 className="font-medium">Notes:</h4>
+                    <ul className="list-disc list-inside">
+                      {result.summary.extractionNotes.map((note, idx) => (
+                        <li key={idx}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {/* Actions */}
                 <div className="flex gap-3 pt-4">
-                  <Button
-                    variant="outline"
-                    onClick={handleUndo}
-                    disabled={undoIngestion.isPending}
-                  >
-                    {undoIngestion.isPending ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <Undo2 className="w-4 h-4 mr-2" />
-                    )}
-                    Undo Ingestion
-                  </Button>
                   <Button onClick={() => navigate(`/expert-networks/${projectId}/tracker`)}>
                     View Tracker
                     <ArrowRight className="w-4 h-4 ml-2" />
@@ -357,7 +458,7 @@ export function IngestPage() {
             </Card>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

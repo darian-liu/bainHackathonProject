@@ -187,6 +187,39 @@ CREATE TABLE IF NOT EXISTS IngestionLogEntry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingestionlogentry_ingestionLogId ON IngestionLogEntry(ingestionLogId);
+
+CREATE TABLE IF NOT EXISTS OutlookConnection (
+    id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL,
+    token_expires_at TEXT NOT NULL,
+    last_connected_at TEXT NOT NULL,
+    last_test_at TEXT,
+    is_active INTEGER DEFAULT 1,
+    allowed_sender_domains TEXT,
+    last_sync_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outlookconnection_is_active ON OutlookConnection(is_active);
+
+CREATE TABLE IF NOT EXISTS ScannedEmail (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    outlook_message_id TEXT NOT NULL,
+    email_subject TEXT,
+    sender TEXT,
+    received_at TEXT,
+    ingested_at TEXT NOT NULL,
+    ingestion_log_id TEXT,
+    FOREIGN KEY (project_id) REFERENCES Project(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scannedemail_project ON ScannedEmail(project_id);
+CREATE INDEX IF NOT EXISTS idx_scannedemail_message_id ON ScannedEmail(outlook_message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scannedemail_unique ON ScannedEmail(project_id, outlook_message_id);
 """
 
 
