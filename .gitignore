@@ -42,6 +42,9 @@ chroma_db/
 *.db
 *.sqlite
 
+# Agent outputs
+backend/agent_outputs/
+
 # Temporary files
 tmp/
 temp/

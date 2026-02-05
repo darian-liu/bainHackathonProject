@@ -1,558 +1,397 @@
-"""Document Agent - Tool-calling agent for document manipulation."""
+"""Tool-calling document agent using OpenAI function calling with AsyncOpenAI."""
 
 import json
-import uuid
 import os
-from typing import AsyncIterator, List, Optional, Any, Dict
+import uuid
 from pathlib import Path
-from openai import OpenAI
-from pydantic import BaseModel, Field
+from typing import Callable, Awaitable, Optional
 
-from app.agents.base import ChatAgent, EventCallback
-from app.core.events import AgentEvent, EventType
+from openai import AsyncOpenAI
+
+from app.agents.prompts import DOCUMENT_AGENT_SYSTEM_PROMPT
 from app.core.config import settings
+from app.core.events import AgentEvent, EventType
 from app.services.document_context import get_document_context
+from app.db.database import get_database
+from app.db.queries import experts as expert_queries
 
+EventCallback = Callable[[AgentEvent], Awaitable[None]]
 
-# ============== Tool Definitions ============== #
+# Agent output directory (relative to backend root)
+AGENT_OUTPUTS_DIR = Path(__file__).parent.parent.parent / "agent_outputs"
 
-class ToolDefinition(BaseModel):
-    """Tool definition for the agent."""
-    name: str
-    description: str
-    parameters: Dict[str, Any]
-
-
-AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_document",
-            "description": "Read the full content of a specific document by its file ID. Returns all chunks concatenated.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_id": {
-                        "type": "string",
-                        "description": "The unique file ID of the document to read"
-                    }
-                },
-                "required": ["file_id"]
-            }
-        }
-    },
+# Tool definitions for OpenAI function calling
+TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "search_documents",
-            "description": "Search across all documents using semantic search. Returns the most relevant chunks matching the query.",
+            "description": "Search the document vector store for chunks relevant to a query.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query to find relevant document sections"
-                    },
-                    "n_results": {
-                        "type": "integer",
-                        "description": "Number of results to return (default: 5, max: 20)",
-                        "default": 5
+                        "description": "The search query to find relevant document chunks.",
                     }
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "list_documents",
-            "description": "List all available documents in the data room with their metadata.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
+            "description": "List all unique documents available in the vector store.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "summarize_documents",
-            "description": "Generate a summary of one or more documents. Can summarize a single document or multiple documents together.",
+            "description": "Retrieve all chunks for a specific document by file_id for summarization.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of file IDs to summarize"
-                    },
-                    "focus": {
+                    "file_id": {
                         "type": "string",
-                        "description": "Optional focus area for the summary (e.g., 'financial metrics', 'key risks')"
+                        "description": "The file_id of the document to summarize.",
                     }
                 },
-                "required": ["file_ids"]
-            }
-        }
+                "required": ["file_id"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "write_document",
-            "description": "Write content to a new document file. Use this to create reports, summaries, or analysis outputs.",
+            "description": "Write content to a file in the agent_outputs directory for the user to download.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "Name of the file to create (e.g., 'summary.md', 'analysis.txt')"
+                        "description": "The filename to write (e.g. 'summary.md').",
                     },
                     "content": {
                         "type": "string",
-                        "description": "The content to write to the file"
+                        "description": "The content to write to the file.",
+                    },
+                },
+                "required": ["filename", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_experts",
+            "description": "Query the expert database for a project. Returns expert profiles with screening scores.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "The project ID to query experts for.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status filter (e.g. 'recommended', 'scheduled', 'completed').",
+                    },
+                    "screening_grade": {
+                        "type": "string",
+                        "description": "Optional screening grade filter: 'strong', 'mixed', or 'weak'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of experts to return. Default 20.",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_expert_details",
+            "description": "Get full details for a specific expert including sources and field provenance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expert_id": {
+                        "type": "string",
+                        "description": "The expert ID to get details for.",
                     }
                 },
-                "required": ["filename", "content"]
-            }
-        }
-    }
+                "required": ["expert_id"],
+            },
+        },
+    },
 ]
 
 
-# ============== Tool Implementations ============== #
+async def _execute_tool(
+    name: str, arguments: dict, project_id: Optional[str]
+) -> str:
+    """Execute a tool call and return the result as a string."""
+    ctx = get_document_context()
 
-class DocumentTools:
-    """Tool implementations for document manipulation."""
+    if name == "search_documents":
+        results = ctx.get_relevant_context(arguments["query"], n_results=5)
+        if not results:
+            return "No relevant documents found."
+        parts = []
+        for i, r in enumerate(results, 1):
+            filename = r.get("metadata", {}).get("filename", "unknown")
+            score = r.get("score", 0)
+            parts.append(f"[{i}] {filename} (score: {score:.2f})\n{r['text'][:500]}")
+        return "\n\n---\n\n".join(parts)
 
-    def __init__(self, output_dir: Optional[str] = None):
-        self.doc_context = get_document_context()
-        self.output_dir = Path(output_dir) if output_dir else Path("./agent_outputs")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._openai_client = None
+    elif name == "list_documents":
+        docs = ctx.get_all_documents()
+        if not docs:
+            return "No documents have been ingested yet."
+        lines = [f"- {d['filename']} (id: {d['file_id']})" for d in docs]
+        return f"Available documents ({len(docs)}):\n" + "\n".join(lines)
 
-    @property
-    def openai_client(self) -> OpenAI:
-        """Lazy-load OpenAI client."""
-        if self._openai_client is None:
-            client_config = {"api_key": settings.openai_api_key}
-            if settings.openai_base_url:
-                client_config["base_url"] = settings.openai_base_url
-            self._openai_client = OpenAI(**client_config)
-        return self._openai_client
-
-    async def read_document(self, file_id: str) -> Dict[str, Any]:
-        """Read full document content by file ID."""
-        chunks = self.doc_context.get_document_chunks(file_id)
-
+    elif name == "summarize_documents":
+        chunks = ctx.get_document_chunks(arguments["file_id"])
         if not chunks:
-            return {
-                "success": False,
-                "error": f"Document with file_id '{file_id}' not found"
-            }
+            return f"No chunks found for file_id '{arguments['file_id']}'."
+        full_text = "\n\n".join(c["text"] for c in chunks)
+        # Return the text for the LLM to summarize
+        return f"Document content ({len(chunks)} chunks):\n\n{full_text[:8000]}"
 
-        # Join all chunks into full content
-        full_content = "\n\n".join(chunks)
+    elif name == "write_document":
+        filename = Path(arguments["filename"]).name  # prevent path traversal
+        os.makedirs(AGENT_OUTPUTS_DIR, exist_ok=True)
+        filepath = AGENT_OUTPUTS_DIR / filename
+        filepath.write_text(arguments["content"], encoding="utf-8")
+        return f"File written: {filename} ({len(arguments['content'])} chars). Available at /api/agent/download/{filename}"
 
-        return {
-            "success": True,
-            "file_id": file_id,
-            "content": full_content,
-            "chunk_count": len(chunks)
-        }
+    elif name == "query_experts":
+        pid = arguments.get("project_id") or project_id
+        if not pid:
+            return "Error: No project_id provided. Please specify a project_id."
 
-    async def search_documents(self, query: str, n_results: int = 5) -> Dict[str, Any]:
-        """Search documents semantically."""
-        n_results = min(max(1, n_results), 20)  # Clamp between 1 and 20
+        db = await get_database()
+        status_filter = arguments.get("status")
+        all_experts = await expert_queries.list_experts(db, pid, status=status_filter)
 
-        results = self.doc_context.search(query, n_results=n_results)
+        # Apply screening_grade filter if specified
+        screening_grade = arguments.get("screening_grade")
+        if screening_grade:
+            all_experts = [
+                e for e in all_experts
+                if (e.get("screeningGrade") or "").lower() == screening_grade.lower()
+            ]
 
-        return {
-            "success": True,
-            "query": query,
-            "results": [
-                {
-                    "filename": r.filename,
-                    "file_id": r.file_id,
-                    "text": r.text,
-                    "score": r.score,
-                    "chunk_index": r.chunk_index
-                }
-                for r in results
-            ],
-            "result_count": len(results)
-        }
+        # Apply limit
+        limit = arguments.get("limit", 20)
+        experts = all_experts[:limit]
 
-    async def list_documents(self) -> Dict[str, Any]:
-        """List all available documents."""
-        documents = self.doc_context.get_all_documents()
+        if not experts:
+            return "No experts found matching the filters."
 
-        return {
-            "success": True,
-            "documents": [
-                {
-                    "file_id": d.file_id,
-                    "filename": d.filename,
-                    "chunk_count": d.chunk_count
-                }
-                for d in documents
-            ],
-            "total_count": len(documents)
-        }
+        lines = []
+        for e in experts:
+            line = f"- **{e['canonicalName']}**"
+            if e.get("canonicalEmployer"):
+                line += f" | {e['canonicalEmployer']}"
+            if e.get("canonicalTitle"):
+                line += f" | {e['canonicalTitle']}"
+            if e.get("screeningGrade"):
+                line += f" | Grade: {e['screeningGrade']}"
+            if e.get("screeningScore") is not None:
+                line += f" (score: {e['screeningScore']})"
+            if e.get("screeningRationale"):
+                line += f"\n  Rationale: {e['screeningRationale'][:200]}"
+            line += f"\n  Status: {e.get('status', 'unknown')} | ID: {e['id']}"
+            lines.append(line)
 
-    async def summarize_documents(
-        self,
-        file_ids: List[str],
-        focus: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Summarize one or more documents."""
-        all_content = []
+        header = f"Found {len(all_experts)} experts"
+        if len(experts) < len(all_experts):
+            header += f" (showing {len(experts)})"
+        return header + ":\n\n" + "\n\n".join(lines)
 
-        for file_id in file_ids:
-            chunks = self.doc_context.get_document_chunks(file_id)
-            if chunks:
-                # Get document info
-                docs = self.doc_context.get_all_documents()
-                filename = next(
-                    (d.filename for d in docs if d.file_id == file_id),
-                    file_id
-                )
-                content = "\n\n".join(chunks)
-                all_content.append(f"=== {filename} ===\n{content}")
-
-        if not all_content:
-            return {
-                "success": False,
-                "error": "No documents found with the provided file IDs"
-            }
-
-        combined_content = "\n\n---\n\n".join(all_content)
-
-        # Truncate if too long
-        max_content_length = 30000
-        if len(combined_content) > max_content_length:
-            combined_content = combined_content[:max_content_length] + "\n\n[Content truncated...]"
-
-        focus_instruction = f"\nFocus particularly on: {focus}" if focus else ""
-
-        prompt = f"""Please provide a comprehensive summary of the following document(s).{focus_instruction}
-
-{combined_content}
-
-Provide:
-1. Key points and main findings
-2. Important details and data
-3. Any notable conclusions or recommendations"""
-
-        response = self.openai_client.chat.completions.create(
-            model=settings.openai_model or "gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a document analyst. Provide clear, comprehensive summaries."
-                },
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
+    elif name == "get_expert_details":
+        db = await get_database()
+        detail = await expert_queries.get_expert_with_full_details(
+            db, arguments["expert_id"]
         )
+        if not detail:
+            return f"Expert '{arguments['expert_id']}' not found."
 
-        summary = response.choices[0].message.content or ""
+        parts = [
+            f"# {detail['canonicalName']}",
+            f"Employer: {detail.get('canonicalEmployer', 'N/A')}",
+            f"Title: {detail.get('canonicalTitle', 'N/A')}",
+            f"Status: {detail.get('status', 'N/A')}",
+        ]
+        if detail.get("screeningGrade"):
+            parts.append(f"Screening: {detail['screeningGrade']} ({detail.get('screeningScore', 'N/A')})")
+        if detail.get("screeningRationale"):
+            parts.append(f"Rationale: {detail['screeningRationale']}")
+        if detail.get("aiRecommendation"):
+            parts.append(f"AI Recommendation: {detail['aiRecommendation']}")
 
-        return {
-            "success": True,
-            "summary": summary,
-            "documents_summarized": len(file_ids),
-            "focus": focus
-        }
+        sources = detail.get("sources", [])
+        if sources:
+            parts.append(f"\n## Sources ({len(sources)})")
+            for s in sources:
+                network = s.get("email_network", "unknown")
+                parts.append(f"- Network: {network}")
+                for p in s.get("provenance", []):
+                    parts.append(f"  - {p['fieldName']}: {p.get('extractedValue', 'N/A')}")
 
-    async def write_document(self, filename: str, content: str) -> Dict[str, Any]:
-        """Write content to a new file."""
-        # Sanitize filename
-        safe_filename = "".join(
-            c for c in filename if c.isalnum() or c in "._-"
-        )
-        if not safe_filename:
-            safe_filename = "output.txt"
+        return "\n".join(parts)
 
-        output_path = self.output_dir / safe_filename
-
-        try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(content)
-
-            return {
-                "success": True,
-                "filename": safe_filename,
-                "path": str(output_path),
-                "size_bytes": len(content.encode("utf-8"))
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to write file: {str(e)}"
-            }
-
-    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool by name with given arguments."""
-        tool_map = {
-            "read_document": self.read_document,
-            "search_documents": self.search_documents,
-            "list_documents": self.list_documents,
-            "summarize_documents": self.summarize_documents,
-            "write_document": self.write_document,
-        }
-
-        if tool_name not in tool_map:
-            return {"success": False, "error": f"Unknown tool: {tool_name}"}
-
-        tool_func = tool_map[tool_name]
-
-        try:
-            return await tool_func(**arguments)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+    return f"Unknown tool: {name}"
 
 
-# ============== Document Agent ============== #
+class DocumentAgent:
+    """Tool-calling document agent using OpenAI function calling."""
 
-DOCUMENT_AGENT_SYSTEM_PROMPT = """You are a helpful document analysis assistant with access to tools for reading, searching, and analyzing documents.
+    MAX_ITERATIONS = 10
 
-Your capabilities:
-1. **list_documents** - See all available documents in the data room
-2. **search_documents** - Find relevant information across all documents
-3. **read_document** - Read the full content of a specific document
-4. **summarize_documents** - Generate summaries of one or more documents
-5. **write_document** - Create new documents with your analysis
-
-When helping users:
-- Start by understanding what documents are available if needed
-- Use search to find relevant information efficiently
-- Read full documents only when needed for comprehensive analysis
-- Cite your sources when providing information
-- Be thorough but concise in your responses
-
-Always think step-by-step about which tools to use to best answer the user's question."""
-
-
-class DocumentAgent(ChatAgent):
-    """Tool-calling agent for document manipulation and analysis."""
-
-    def __init__(self, output_dir: Optional[str] = None):
-        """Initialize the document agent.
-
-        Args:
-            output_dir: Directory for writing output files
-        """
+    def __init__(self):
         client_config = {"api_key": settings.openai_api_key}
         if settings.openai_base_url:
             client_config["base_url"] = settings.openai_base_url
-
-        self.client = OpenAI(**client_config)
-        self.model = settings.openai_model or "gpt-4o"
-        self.tools = DocumentTools(output_dir)
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.client = AsyncOpenAI(**client_config)
+        self.model = settings.openai_model or "gpt-4o-mini"
 
     async def chat(
         self,
         message: str,
-        context: List[str],
-        on_event: EventCallback
-    ) -> AsyncIterator[str]:
+        conversation_history: list,
+        on_event: EventCallback,
+        project_id: Optional[str] = None,
+    ) -> dict:
         """
-        Process a chat message with tool calling support.
+        Run the agent loop.
 
-        Args:
-            message: User's message
-            context: Document context chunks (may be empty for tool-based agent)
-            on_event: Callback for emitting agent events
-
-        Yields:
-            Response text chunks
+        Returns dict with 'response' (final text) and 'tool_calls' (log of calls made).
         """
         agent_id = str(uuid.uuid4())
 
-        # Emit agent started
         await on_event(
             AgentEvent.create(
                 EventType.AGENT_STARTED,
                 agent_id,
-                {"message": message, "has_context": bool(context)}
+                {"message": message, "project_id": project_id},
             )
         )
 
-        # Add user message to history
-        self.conversation_history.append({
-            "role": "user",
-            "content": message
-        })
+        # Build messages
+        messages = [{"role": "system", "content": DOCUMENT_AGENT_SYSTEM_PROMPT}]
+        messages.extend(conversation_history)
+        messages.append({"role": "user", "content": message})
+
+        tool_calls_log = []
 
         try:
-            # Initial LLM call with tools
-            await on_event(
-                AgentEvent.create(
-                    EventType.LLM_REQUEST,
-                    agent_id,
-                    {"model": self.model, "has_tools": True}
-                )
-            )
-
-            messages = [
-                {"role": "system", "content": DOCUMENT_AGENT_SYSTEM_PROMPT},
-                *self.conversation_history
-            ]
-
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=AGENT_TOOLS,
-                tool_choice="auto",
-                temperature=0.3
-            )
-
-            assistant_message = response.choices[0].message
-
-            # Process tool calls in a loop
-            max_iterations = 10
-            iteration = 0
-
-            while assistant_message.tool_calls and iteration < max_iterations:
-                iteration += 1
-
-                # Add assistant message with tool calls to history
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": assistant_message.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }
-                        for tc in assistant_message.tool_calls
-                    ]
-                })
-
-                # Execute each tool call
-                for tool_call in assistant_message.tool_calls:
-                    tool_name = tool_call.function.name
-                    try:
-                        arguments = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-
-                    # Emit tool called event
-                    await on_event(
-                        AgentEvent.create(
-                            EventType.TOOL_CALLED,
-                            agent_id,
-                            {
-                                "tool": tool_name,
-                                "arguments": arguments,
-                                "tool_call_id": tool_call.id
-                            }
-                        )
-                    )
-
-                    # Execute the tool
-                    result = await self.tools.execute_tool(tool_name, arguments)
-
-                    # Emit tool completed event
-                    await on_event(
-                        AgentEvent.create(
-                            EventType.TOOL_COMPLETED,
-                            agent_id,
-                            {
-                                "tool": tool_name,
-                                "success": result.get("success", False),
-                                "tool_call_id": tool_call.id
-                            }
-                        )
-                    )
-
-                    # Add tool result to history
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result)
-                    })
-
-                # Make another LLM call with tool results
+            for iteration in range(self.MAX_ITERATIONS):
                 await on_event(
                     AgentEvent.create(
                         EventType.LLM_REQUEST,
                         agent_id,
-                        {"model": self.model, "iteration": iteration}
+                        {"model": self.model, "iteration": iteration},
                     )
                 )
 
-                messages = [
-                    {"role": "system", "content": DOCUMENT_AGENT_SYSTEM_PROMPT},
-                    *self.conversation_history
-                ]
-
-                response = self.client.chat.completions.create(
+                response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    tools=AGENT_TOOLS,
+                    tools=TOOLS,
                     tool_choice="auto",
-                    temperature=0.3
                 )
 
-                assistant_message = response.choices[0].message
+                choice = response.choices[0]
 
-            # Final response
-            final_content = assistant_message.content or ""
-
-            # Add to history
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": final_content
-            })
-
-            await on_event(
-                AgentEvent.create(
-                    EventType.LLM_RESPONSE,
-                    agent_id,
-                    {"response_length": len(final_content)}
+                await on_event(
+                    AgentEvent.create(
+                        EventType.LLM_RESPONSE,
+                        agent_id,
+                        {
+                            "finish_reason": choice.finish_reason,
+                            "iteration": iteration,
+                            "has_tool_calls": bool(choice.message.tool_calls),
+                        },
+                    )
                 )
-            )
 
-            # Yield the response
-            yield final_content
+                # Append assistant message to history
+                messages.append(choice.message)
 
+                # If the model wants to call tools, execute them
+                if choice.message.tool_calls:
+                    for tc in choice.message.tool_calls:
+                        fn_name = tc.function.name
+                        try:
+                            fn_args = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            fn_args = {}
+
+                        await on_event(
+                            AgentEvent.create(
+                                EventType.TOOL_CALLED,
+                                agent_id,
+                                {"tool": fn_name, "arguments": fn_args},
+                            )
+                        )
+
+                        result = await _execute_tool(fn_name, fn_args, project_id)
+
+                        tool_calls_log.append({
+                            "tool": fn_name,
+                            "arguments": fn_args,
+                            "result_preview": result[:200],
+                        })
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        })
+                else:
+                    # No tool calls — model produced its final response
+                    final_text = choice.message.content or ""
+
+                    await on_event(
+                        AgentEvent.create(
+                            EventType.AGENT_COMPLETED,
+                            agent_id,
+                            {"status": "success", "iterations": iteration + 1},
+                        )
+                    )
+
+                    return {
+                        "response": final_text,
+                        "tool_calls": tool_calls_log,
+                    }
+
+            # Exhausted iterations — return whatever we have
+            final_text = "I reached the maximum number of tool-calling steps. Here's what I found so far."
             await on_event(
                 AgentEvent.create(
                     EventType.AGENT_COMPLETED,
                     agent_id,
-                    {"status": "success", "tool_calls_made": iteration}
+                    {"status": "max_iterations", "iterations": self.MAX_ITERATIONS},
                 )
             )
+            return {"response": final_text, "tool_calls": tool_calls_log}
 
         except Exception as e:
             await on_event(
                 AgentEvent.create(
                     EventType.AGENT_COMPLETED,
                     agent_id,
-                    {"status": "error", "error": str(e)}
+                    {"status": "error", "error": str(e)},
                 )
             )
             raise
-
-    def clear_history(self):
-        """Clear conversation history."""
-        self.conversation_history = []
-
-    def get_available_tools(self) -> List[Dict[str, Any]]:
-        """Get list of available tools with their descriptions."""
-        return [
-            {
-                "name": tool["function"]["name"],
-                "description": tool["function"]["description"],
-                "parameters": tool["function"]["parameters"]
-            }
-            for tool in AGENT_TOOLS
-        ]
