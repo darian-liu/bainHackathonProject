@@ -214,12 +214,60 @@ CREATE TABLE IF NOT EXISTS ScannedEmail (
     received_at TEXT,
     ingested_at TEXT NOT NULL,
     ingestion_log_id TEXT,
+    scan_run_id TEXT,
+    status TEXT DEFAULT 'processed',
+    extraction_count INTEGER DEFAULT 0,
     FOREIGN KEY (project_id) REFERENCES Project(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_scannedemail_project ON ScannedEmail(project_id);
 CREATE INDEX IF NOT EXISTS idx_scannedemail_message_id ON ScannedEmail(outlook_message_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scannedemail_unique ON ScannedEmail(project_id, outlook_message_id);
+
+-- ScanRun tracks each auto-scan execution for authoritative metrics
+CREATE TABLE IF NOT EXISTS ScanRun (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT DEFAULT 'running' NOT NULL,
+    
+    -- Query parameters used
+    max_emails INTEGER,
+    sender_domains TEXT,
+    keywords TEXT,
+    
+    -- Message counts
+    messages_fetched INTEGER DEFAULT 0,
+    messages_filtered INTEGER DEFAULT 0,
+    messages_already_scanned INTEGER DEFAULT 0,
+    messages_processed INTEGER DEFAULT 0,
+    messages_skipped INTEGER DEFAULT 0,
+    messages_failed INTEGER DEFAULT 0,
+    
+    -- Expert counts (authoritative)
+    experts_added INTEGER DEFAULT 0,
+    experts_updated INTEGER DEFAULT 0,
+    experts_merged INTEGER DEFAULT 0,
+    
+    -- Details (JSON)
+    added_experts_json TEXT,
+    updated_experts_json TEXT,
+    skipped_reasons_json TEXT,
+    errors_json TEXT,
+    processed_details_json TEXT,
+    
+    -- Linked ingestion log
+    ingestion_log_id TEXT,
+    
+    -- Error info
+    error_message TEXT,
+    
+    FOREIGN KEY (project_id) REFERENCES Project(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanrun_project ON ScanRun(project_id);
+CREATE INDEX IF NOT EXISTS idx_scanrun_started ON ScanRun(started_at);
 """
 
 

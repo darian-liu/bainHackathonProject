@@ -73,19 +73,23 @@ async def list_experts(
     project_id: str,
     status: Optional[str] = None
 ) -> List[dict]:
-    """List experts for a project with optional status filter."""
+    """List experts for a project with optional status filter, including network from ExpertSource."""
     if status:
         query = """
-            SELECT * FROM Expert
-            WHERE projectId = :project_id AND status = :status
-            ORDER BY createdAt DESC
+            SELECT e.*, 
+                   (SELECT es.network FROM ExpertSource es WHERE es.expertId = e.id ORDER BY es.createdAt DESC LIMIT 1) as network
+            FROM Expert e
+            WHERE e.projectId = :project_id AND e.status = :status
+            ORDER BY e.createdAt DESC
         """
         rows = await db.fetch_all(query, {"project_id": project_id, "status": status})
     else:
         query = """
-            SELECT * FROM Expert
-            WHERE projectId = :project_id
-            ORDER BY createdAt DESC
+            SELECT e.*, 
+                   (SELECT es.network FROM ExpertSource es WHERE es.expertId = e.id ORDER BY es.createdAt DESC LIMIT 1) as network
+            FROM Expert e
+            WHERE e.projectId = :project_id
+            ORDER BY e.createdAt DESC
         """
         rows = await db.fetch_all(query, {"project_id": project_id})
 

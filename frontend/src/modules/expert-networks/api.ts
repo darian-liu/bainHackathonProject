@@ -14,6 +14,7 @@ import type {
   IngestionLog,
   ExpertWithDetails,
   AutoScanResult,
+  ScanRun,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -142,29 +143,6 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/latest`
     )
     if (!res.ok) throw new Error('Failed to fetch ingestion log')
-    return res.json()
-  },
-
-  // Get latest scan run
-  getLatestScanRun: async (
-    projectId: string
-  ): Promise<{ scanRun: import('./types').ScanRun | null }> => {
-    const res = await fetch(
-      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs/latest`
-    )
-    if (!res.ok) throw new Error('Failed to fetch scan run')
-    return res.json()
-  },
-
-  // List scan runs
-  listScanRuns: async (
-    projectId: string,
-    limit: number = 10
-  ): Promise<{ scanRuns: import('./types').ScanRun[] }> => {
-    const res = await fetch(
-      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs?limit=${limit}`
-    )
-    if (!res.ok) throw new Error('Failed to fetch scan runs')
     return res.json()
   },
 
@@ -392,6 +370,23 @@ export const expertNetworksApi = {
     if (!res.ok) throw new Error('Failed to export CSV')
     return res.blob()
   },
+
+  // Scan Runs (authoritative scan tracking)
+  getLatestScanRun: async (projectId: string): Promise<{ scanRun: ScanRun | null }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs/latest`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan run')
+    return res.json()
+  },
+
+  listScanRuns: async (projectId: string, limit: number = 10): Promise<{ scanRuns: ScanRun[] }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs?limit=${limit}`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan runs')
+    return res.json()
+  },
 }
 
 // ============== React Query Hooks ============== //
@@ -515,22 +510,6 @@ export function useLatestIngestionLog(projectId: string) {
   })
 }
 
-export function useLatestScanRun(projectId: string) {
-  return useQuery({
-    queryKey: ['scan-run', projectId],
-    queryFn: () => expertNetworksApi.getLatestScanRun(projectId),
-    enabled: !!projectId,
-  })
-}
-
-export function useScanRuns(projectId: string, limit: number = 10) {
-  return useQuery({
-    queryKey: ['scan-runs', projectId, limit],
-    queryFn: () => expertNetworksApi.listScanRuns(projectId, limit),
-    enabled: !!projectId,
-  })
-}
-
 export function useUpdateScreenerConfig() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -581,8 +560,6 @@ export function useAutoScanInbox() {
       queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
       queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
       queryClient.invalidateQueries({ queryKey: ['ingestion-log', variables.projectId] })
-      queryClient.invalidateQueries({ queryKey: ['scan-run', variables.projectId] })
-      queryClient.invalidateQueries({ queryKey: ['scan-runs', variables.projectId] })
     },
   })
 }

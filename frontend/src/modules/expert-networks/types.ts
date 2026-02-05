@@ -32,6 +32,7 @@ export interface Expert {
   canonicalName: string
   canonicalEmployer: string | null
   canonicalTitle: string | null
+  network: string | null  // Expert network source (e.g., alphasights, guidepoint)
   status: ExpertStatus
   statusUpdatedAt: string
   conflictStatus: ConflictStatus | null
@@ -270,40 +271,70 @@ export interface AutoScanProgress {
   skippedCount: number
   errorCount: number
   errors: string[]
+  skippedReasons?: Array<{
+    messageId: string
+    subject: string
+    reason: string
+  }>
+  processedDetails?: Array<{
+    messageId: string
+    subject: string
+    sender: string
+    network: string | null
+    extractedCount: number
+    addedCount: number
+    updatedCount: number
+    addedExperts: string[]
+    updatedExperts: string[]
+  }>
 }
 
+export interface AutoScanResult {
+  status: 'scanning' | 'complete' | 'error'
+  progress: AutoScanProgress
+  ingestionLogId: string | null
+  scanRunId: string | null
+  results: {
+    summary: IngestionSummary & {
+      emailsProcessed: number
+      emailsSkipped: number
+      source?: string
+    }
+    changes: IngestionChanges
+  }
+  message: string
+}
+
+// ScanRun - persistent record of each auto-scan execution
 export interface ScanRun {
   id: string
   projectId: string
   startedAt: string
-  completedAt?: string | null
+  completedAt: string | null
   status: 'running' | 'completed' | 'failed'
   maxEmails: number
-  messagesConsidered: number
+  messagesFetched: number
+  messagesFiltered: number
+  messagesAlreadyScanned: number
   messagesProcessed: number
   messagesSkipped: number
   messagesFailed: number
   expertsAdded: number
   expertsUpdated: number
   expertsMerged: number
-  errorMessage?: string | null
-  errorDetails?: string[] | null
-  ingestionLogId?: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-export interface AutoScanResult {
-  status: 'scanning' | 'complete' | 'error'
-  progress: AutoScanProgress
-  scanRunId?: string
-  ingestionLogId?: string | null
-  results: {
-    summary: IngestionSummary & {
-      emailsProcessed: number
-      emailsSkipped: number
-    }
-    changes: IngestionChanges
-  }
-  message: string
+  addedExperts: Array<{ expertId: string; expertName: string }>
+  updatedExperts: Array<{ expertId: string; expertName: string; fieldsUpdated?: string[] }>
+  skippedReasons: Array<{ messageId: string; subject: string; reason: string }>
+  errors: string[]
+  processedDetails: Array<{
+    messageId: string
+    subject: string
+    sender: string
+    network: string | null
+    extractedCount: number
+    addedCount: number
+    updatedCount: number
+  }>
+  ingestionLogId: string | null
+  errorMessage: string | null
 }

@@ -218,6 +218,8 @@ class OutlookService:
         access_token: str,
         top: int = 50,
         since: Optional[datetime] = None,
+        include_body: bool = False,
+        inbox_only: bool = True,
     ) -> List[dict]:
         """
         List messages from user's inbox, ordered newest first.
@@ -226,17 +228,23 @@ class OutlookService:
             access_token: Valid access token
             top: Maximum number of messages to return
             since: Only return messages received after this datetime
+            include_body: If True, include full body in response (avoids second API call)
+            inbox_only: If True, only read from Inbox folder (not Sent, Drafts, etc.)
             
         Returns:
-            List of message metadata objects with id, subject, from, receivedDateTime, bodyPreview
+            List of message metadata objects with id, subject, from, receivedDateTime, bodyPreview, and optionally body
         """
         headers = {"Authorization": f"Bearer {access_token}"}
         
         # Build query parameters
+        select_fields = "id,subject,from,receivedDateTime,bodyPreview"
+        if include_body:
+            select_fields += ",body"
+        
         params = {
             "$top": str(top),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,receivedDateTime,bodyPreview",
+            "$select": select_fields,
         }
         
         # Add date filter if specified
@@ -244,9 +252,15 @@ class OutlookService:
             since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
             params["$filter"] = f"receivedDateTime ge {since_str}"
         
+        # Use Inbox folder endpoint or all messages
+        if inbox_only:
+            endpoint = f"{self.GRAPH_URL}/me/mailFolders/Inbox/messages"
+        else:
+            endpoint = f"{self.GRAPH_URL}/me/messages"
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{self.GRAPH_URL}/me/messages",
+                endpoint,
                 headers=headers,
                 params=params,
             )

@@ -5,7 +5,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, Mail, FileText } from 'lucide-react'
+import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
 import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useLatestScanRun, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, useRecommendExpert, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
@@ -26,16 +26,9 @@ export function TrackerPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-
-  // State variables first
-  const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<string>('all')
-
-  // Then hook calls that depend on state
-  const { data: expertsData, isLoading, error, refetch } = useExperts(projectId!, statusFilter === 'all' ? undefined : statusFilter)
   const { data: projectData } = useProject(projectId!)
+  const { data, isLoading, refetch } = useExperts(projectId!)
   const { data: ingestionLogData, refetch: refetchLog } = useLatestIngestionLog(projectId!)
-  const { data: scanRunData, refetch: refetchScanRun } = useLatestScanRun(projectId!)
   const updateExpert = useUpdateExpert()
 
   const updateScreenerConfig = useUpdateScreenerConfig()
@@ -59,7 +52,7 @@ export function TrackerPage() {
   const [selectedExperts, setSelectedExperts] = useState<Set<string>>(new Set())
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
-  // Auto-scan state
+  // Auto-scan state - enhanced with full result tracking
   const [scanProgress, setScanProgress] = useState<{
     isScanning: boolean
     stage: string
@@ -68,6 +61,8 @@ export function TrackerPage() {
       addedCount: number
       updatedCount: number
       emailsProcessed: number
+      addedExperts?: string[]
+      updatedExperts?: string[]
     }
   } | null>(null)
 
@@ -92,31 +87,43 @@ export function TrackerPage() {
       setSearchParams({})
 
       // Execute the scan (reduced to 10 emails for speed)
-      console.log(`[SCAN UI] Starting auto-scan for project ${projectId} with maxEmails=10`)
       autoScanInbox.mutateAsync({ projectId, maxEmails: 10 })
         .then((result) => {
-          console.log(`[SCAN UI] Scan completed successfully:`, result)
-          console.log(`[SCAN UI] Result summary:`, result.results?.summary)
-          console.log(`[SCAN UI] Extracting metrics: addedCount=${result.results?.summary?.addedCount}, updatedCount=${result.results?.summary?.updatedCount}, emailsProcessed=${result.results?.summary?.emailsProcessed}`)
+          // Log full result for debugging
+          console.log('[TrackerPage] Scan complete, full result:', JSON.stringify(result, null, 2))
+
+          // Extract metrics from the authoritative result
+          const summary = result.results?.summary || {}
+          const changes = result.results?.changes || {}
+
+          const addedCount = summary.addedCount ?? changes.added?.length ?? 0
+          const updatedCount = summary.updatedCount ?? changes.updated?.length ?? 0
+          const emailsProcessed = summary.emailsProcessed ?? 0
+
+          // Extract expert names for display
+          const addedExperts = changes.added?.map((e: { expertName?: string }) => e.expertName || 'Unknown') || []
+          const updatedExperts = changes.updated?.map((e: { expertName?: string }) => e.expertName || 'Unknown') || []
+
+          console.log('[TrackerPage] Extracted metrics:', { addedCount, updatedCount, emailsProcessed, addedExperts, updatedExperts })
 
           setScanProgress({
             isScanning: false,
             stage: 'complete',
             message: result.message,
             result: {
-              addedCount: result.results.summary.addedCount,
-              updatedCount: result.results.summary.updatedCount,
-              emailsProcessed: result.results.summary.emailsProcessed,
+              addedCount,
+              updatedCount,
+              emailsProcessed,
+              addedExperts,
+              updatedExperts,
             },
           })
-
-          console.log(`[SCAN UI] Updated scanProgress state with result metrics`)
           refetch()
           refetchLog()
           // Do NOT auto-dismiss - user must see the result
         })
         .catch((error) => {
-          console.error(`[SCAN UI] Scan failed:`, error)
+          console.error('[TrackerPage] Scan failed:', error)
           setScanProgress({
             isScanning: false,
             stage: 'error',
@@ -126,6 +133,8 @@ export function TrackerPage() {
     }
   }, [searchParams, projectId])
 
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
   const [isExporting, setIsExporting] = useState(false)
   // showChangeSummary removed - summaries now always persist
   const [showScreenerConfig, setShowScreenerConfig] = useState(false)
@@ -157,6 +166,7 @@ export function TrackerPage() {
   const defaultColumnWidths = {
     details: 48,
     name: 192,
+    network: 120,
     employer: 160,
     title: 160,
     status: 144,
@@ -471,13 +481,11 @@ export function TrackerPage() {
         isSaving={updateScreenerConfig.isPending}
       />
 
-      {/* Auto-Scan Progress Banner */}
-      {scanProgress && (
+      {/* Auto-Scan Progress Banner - only show during scanning or on error */}
+      {scanProgress && (scanProgress.isScanning || scanProgress.stage === 'error') && (
         <div className={`border rounded-lg p-4 ${scanProgress.isScanning
           ? 'bg-purple-50 border-purple-200'
-          : scanProgress.stage === 'error'
-            ? 'bg-red-50 border-red-200'
-            : 'bg-green-50 border-green-200'
+          : 'bg-red-50 border-red-200'
           }`}>
           <div className="flex items-center gap-3">
             {scanProgress.isScanning ? (
@@ -491,7 +499,7 @@ export function TrackerPage() {
                   <p className="text-sm text-purple-700">{scanProgress.message}</p>
                 </div>
               </>
-            ) : scanProgress.stage === 'error' ? (
+            ) : (
               <>
                 <AlertCircle className="w-5 h-5 text-red-600" />
                 <div className="flex-1">
@@ -504,28 +512,6 @@ export function TrackerPage() {
                     scanInitiatedRef.current = false
                   }}
                   className="ml-auto text-red-400 hover:text-red-600"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </>
-            ) : (
-              <>
-                <Mail className="w-5 h-5 text-green-600" />
-                <div className="flex-1">
-                  <p className="font-medium text-green-900">Inbox Scan Complete</p>
-                  <p className="text-sm text-green-700">
-                    {scanProgress.result?.emailsProcessed || 0} emails processed •{' '}
-                    <span className="font-semibold text-green-800">{scanProgress.result?.addedCount || 0} experts added</span> •{' '}
-                    <span className="font-semibold text-blue-700">{scanProgress.result?.updatedCount || 0} updated</span>
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    setScanProgress(null)
-                    scanInitiatedRef.current = false
-                  }}
-                  className="ml-auto text-green-400 hover:text-green-600"
-                  title="Dismiss"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -807,6 +793,22 @@ export function TrackerPage() {
                 </TableHead>
                 <TableHead
                   className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
+                  style={{ width: columnWidths.network }}
+                  onClick={() => toggleSort('network')}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>Network</span>
+                    {sortConfig.column === 'network' && (
+                      sortConfig.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+                    )}
+                  </div>
+                  <div
+                    className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 active:bg-purple-500"
+                    onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'network'); }}
+                  />
+                </TableHead>
+                <TableHead
+                  className="relative overflow-hidden cursor-pointer hover:bg-gray-50"
                   style={{ width: columnWidths.employer }}
                   onClick={() => toggleSort('employer')}
                 >
@@ -1047,6 +1049,13 @@ function ExpertRow({
             {expert.canonicalName}
           </div>
         )}
+      </TableCell>
+
+      {/* Network */}
+      <TableCell className="text-sm text-gray-600 overflow-hidden">
+        <span className="block truncate capitalize" title={expert.network || '-'}>
+          {expert.network || '-'}
+        </span>
       </TableCell>
 
       {/* Employer */}

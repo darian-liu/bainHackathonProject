@@ -1,8 +1,10 @@
 """Agent API routes for document analysis agent."""
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 import tempfile
 import os
 
@@ -202,3 +204,61 @@ async def delete_session(session_id: str):
         return {"success": True, "deleted": True}
 
     return {"success": True, "deleted": False}
+
+
+@router.get("/download/{filename}")
+async def download_file(filename: str):
+    """Download a file from agent_outputs directory.
+    
+    This endpoint serves files created by the write_document tool,
+    triggering a browser download with the original filename.
+    """
+    # Sanitize filename to prevent path traversal
+    safe_filename = Path(filename).name
+    if not safe_filename or safe_filename.startswith('.'):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    # Look for file in agent_outputs directory
+    output_dir = Path("./agent_outputs")
+    file_path = output_dir / safe_filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {safe_filename}")
+    
+    # Determine media type based on extension
+    ext = file_path.suffix.lower()
+    media_types = {
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=safe_filename,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename=\"{safe_filename}\""}
+    )
+
+
+@router.get("/files")
+async def list_output_files():
+    """List all files in the agent_outputs directory."""
+    output_dir = Path("./agent_outputs")
+    
+    if not output_dir.exists():
+        return {"files": []}
+    
+    files = []
+    for f in output_dir.iterdir():
+        if f.is_file() and not f.name.startswith('.'):
+            files.append({
+                "filename": f.name,
+                "size_bytes": f.stat().st_size,
+                "modified": f.stat().st_mtime
+            })
+    
+    return {"files": sorted(files, key=lambda x: x["modified"], reverse=True)}

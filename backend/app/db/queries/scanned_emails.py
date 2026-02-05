@@ -42,23 +42,18 @@ async def record_scanned_email(
     sender: Optional[str] = None,
     received_at: Optional[str] = None,
     ingestion_log_id: Optional[str] = None,
-    internet_message_id: Optional[str] = None,
-    subject_hash: Optional[str] = None,
-    status: str = "processed",
 ) -> dict:
     """Record that an email has been scanned."""
     now = datetime.utcnow()
     record_id = secrets.token_urlsafe(16)
     
     query = """
-        INSERT OR REPLACE INTO ScannedEmail (
+        INSERT INTO ScannedEmail (
             id, project_id, outlook_message_id, email_subject, 
-            sender, received_at, ingested_at, ingestion_log_id,
-            internet_message_id, subject_hash, status
+            sender, received_at, ingested_at, ingestion_log_id
         ) VALUES (
             :id, :project_id, :outlook_message_id, :email_subject,
-            :sender, :received_at, :ingested_at, :ingestion_log_id,
-            :internet_message_id, :subject_hash, :status
+            :sender, :received_at, :ingested_at, :ingestion_log_id
         )
     """
     
@@ -71,9 +66,6 @@ async def record_scanned_email(
         "received_at": received_at,
         "ingested_at": now.isoformat(),
         "ingestion_log_id": ingestion_log_id,
-        "internet_message_id": internet_message_id,
-        "subject_hash": subject_hash,
-        "status": status,
     })
     
     return {

@@ -10,13 +10,22 @@ import asyncio
 import hashlib
 import secrets
 import logging
-from typing import Optional, List, Set
+import json
+from typing import Optional, List, Set, Dict, Any
 from datetime import datetime
 import databases
 
-# Configure logging for scan debugging
+# Configure logging for scan debugging - use DEBUG level for detailed tracing
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+
+# Also add a console handler if not already present
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('[%(levelname)s] %(name)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 from app.services.outlook_service import outlook_service
 from app.services.auto_ingestion import AutoIngestionService
@@ -42,6 +51,8 @@ class ScanProgress:
         self.skipped_count = 0
         self.error_count = 0
         self.errors: List[str] = []
+        self.skipped_reasons: List[Dict[str, str]] = []  # Track why emails were skipped
+        self.processed_details: List[Dict[str, Any]] = []  # Track what was processed
     
     def to_dict(self) -> dict:
         return {
@@ -53,6 +64,8 @@ class ScanProgress:
             "skippedCount": self.skipped_count,
             "errorCount": self.error_count,
             "errors": self.errors[:5],  # Limit errors in response
+            "skippedReasons": self.skipped_reasons[:10],  # Include skip reasons
+            "processedDetails": self.processed_details[:10],  # Include processing details
         }
 
 
@@ -79,13 +92,9 @@ class OutlookScanningService:
         Returns:
             Aggregated ingestion results
         """
-        # Create scan run record for authoritative tracking
-        scan_run = await scan_runs.create_scan_run(db, project_id, max_emails)
-        scan_run_id = scan_run["id"]
-        
-        logger.info(f"[SCAN {scan_run_id}] ===== STARTING INBOX SCAN =====")
-        logger.info(f"[SCAN {scan_run_id}] Project ID: {project_id}")
-        logger.info(f"[SCAN {scan_run_id}] Max emails: {max_emails}")
+        # Generate unique scan_run_id for tracing
+        scan_run_id = secrets.token_urlsafe(8)
+        logger.info(f"[SCAN {scan_run_id}] Starting inbox scan for project_id={project_id}, max_emails={max_emails}")
         
         progress = ScanProgress()
         
@@ -97,6 +106,22 @@ class OutlookScanningService:
         project = await projects.get_project(db, project_id)
         if not project:
             raise Exception("Project not found")
+        
+        # Create persistent ScanRun record for authoritative tracking
+        scan_run_record = None
+        try:
+            scan_run_record = await scan_runs.create_scan_run(
+                db=db,
+                project_id=project_id,
+                max_emails=max_emails,
+                sender_domains=",".join(outlook_service.allowed_sender_domains) if outlook_service.allowed_sender_domains else None,
+                keywords=",".join(outlook_service.network_keywords) if outlook_service.network_keywords else None,
+            )
+            scan_run_id = scan_run_record["id"]  # Use the DB-generated ID
+            logger.info(f"[SCAN {scan_run_id}] Created ScanRun record in database")
+        except Exception as e:
+            # If ScanRun table doesn't exist yet, continue without it
+            logger.warning(f"[SCAN {scan_run_id}] Could not create ScanRun record (table may not exist): {e}")
         
         # Get Outlook connection
         progress.stage = "connecting"
@@ -129,83 +154,84 @@ class OutlookScanningService:
         
         # Get already scanned message IDs for this project
         scanned_ids = await scanned_emails.get_scanned_message_ids(db, project_id)
-        logger.info(f"[SCAN {scan_run_id}] Already scanned message IDs: {len(scanned_ids)} messages")
+        logger.debug(f"[SCAN {scan_run_id}] Already scanned message IDs for project: {len(scanned_ids)} messages")
         
-        # Fetch recent messages
+        # Fetch recent messages from INBOX ONLY with body included (single API call)
         progress.stage = "scanning"
+        
+        # Default to last 7 days for faster scans
+        from datetime import timedelta
+        since_date = datetime.utcnow() - timedelta(days=7)
+        
         try:
             messages = await outlook_service.list_messages(
                 access_token=access_token,
                 top=max_emails,
+                since=since_date,
+                include_body=True,  # Include body to avoid second API call per email
+                inbox_only=True,    # Only read from Inbox folder (not Sent, Drafts, etc.)
             )
+            logger.info(f"[SCAN {scan_run_id}] Fetched {len(messages)} messages from Inbox (last 7 days)")
+            
+            # Log each message for debugging
+            for i, msg in enumerate(messages):
+                msg_id = msg.get("id", "unknown")[:20]
+                subject = msg.get("subject", "")[:50]
+                sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
+                received = msg.get("receivedDateTime", "unknown")
+                logger.debug(f"[SCAN {scan_run_id}] Message {i+1}: id={msg_id}..., subject='{subject}', from={sender}, received={received}")
         except Exception as e:
+            logger.error(f"[SCAN {scan_run_id}] Failed to fetch emails: {str(e)}")
             raise Exception(f"Failed to fetch emails from Outlook: {str(e)}")
         
         progress.total_emails = len(messages)
-        logger.info(f"[SCAN {scan_run_id}] Fetched {len(messages)} messages from Outlook")
-        
-        # Update scan run with messages considered
-        await scan_runs.update_scan_run_progress(
-            db, scan_run_id, messages_considered=len(messages)
-        )
-        
-        # Log message details for debugging
-        for i, msg in enumerate(messages[:5]):  # Log first 5 messages
-            sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
-            subject = msg.get("subject", "")[:50]
-            received = msg.get("receivedDateTime", "")
-            logger.info(f"[SCAN {scan_run_id}] Message {i+1}: id={msg['id'][:20]}..., from={sender}, subject='{subject}', received={received}")
         
         # Filter by sender domain (if configured)
         domain_filtered = outlook_service.filter_messages_by_sender_domain(messages)
-        logger.info(f"[SCAN {scan_run_id}] Domain filtered: {len(domain_filtered)} messages")
+        logger.debug(f"[SCAN {scan_run_id}] After domain filter: {len(domain_filtered)} messages (domains: {outlook_service.allowed_sender_domains})")
         
         # If no domain filter, filter by keywords instead
         if not outlook_service.allowed_sender_domains:
             filtered_messages = outlook_service.filter_messages_by_keywords(messages)
-            logger.info(f"[SCAN {scan_run_id}] Keyword filtered (no domain filter): {len(filtered_messages)} messages")
+            logger.debug(f"[SCAN {scan_run_id}] After keyword filter: {len(filtered_messages)} messages (keywords: {outlook_service.network_keywords})")
         else:
             # If domain filter is set, use domain-filtered results
             # Also include keyword matches from non-domain emails
             keyword_filtered = outlook_service.filter_messages_by_keywords(messages)
-            logger.info(f"[SCAN {scan_run_id}] Keyword filtered: {len(keyword_filtered)} messages")
             # Combine: domain matches OR keyword matches
             filtered_ids = {m["id"] for m in domain_filtered}
             filtered_messages = domain_filtered.copy()
             for msg in keyword_filtered:
                 if msg["id"] not in filtered_ids:
                     filtered_messages.append(msg)
-            logger.info(f"[SCAN {scan_run_id}] Combined filtered: {len(filtered_messages)} messages")
+            logger.debug(f"[SCAN {scan_run_id}] After combined filter: {len(filtered_messages)} messages")
         
         progress.filtered_emails = len(filtered_messages)
         
-        # Filter out already scanned emails
-        new_messages = [m for m in filtered_messages if m["id"] not in scanned_ids]
-        progress.skipped_count = len(filtered_messages) - len(new_messages)
-        logger.info(f"[SCAN {scan_run_id}] After dedup: {len(new_messages)} new messages, {progress.skipped_count} already scanned")
+        # Filter out already scanned emails and track why each is skipped
+        new_messages = []
+        already_scanned_count = 0
+        for msg in filtered_messages:
+            if msg["id"] in scanned_ids:
+                already_scanned_count += 1
+                progress.skipped_reasons.append({
+                    "messageId": msg["id"][:20],
+                    "subject": msg.get("subject", "")[:50],
+                    "reason": "already_processed"
+                })
+                logger.debug(f"[SCAN {scan_run_id}] Skipping already-processed: {msg.get('subject', '')[:50]}")
+            else:
+                new_messages.append(msg)
+        
+        progress.skipped_count = already_scanned_count
+        logger.info(f"[SCAN {scan_run_id}] New messages to process: {len(new_messages)}, already processed: {already_scanned_count}")
         
         if not new_messages:
-            logger.info(f"[SCAN {scan_run_id}] No new messages to process - returning early")
-            
-            # Update scan run with final counts
-            await scan_runs.update_scan_run_progress(
-                db, scan_run_id, 
-                messages_processed=0,
-                messages_skipped=progress.skipped_count
-            )
-            await scan_runs.complete_scan_run(
-                db, scan_run_id, 
-                status="completed",
-                experts_added=0,
-                experts_updated=0,
-                experts_merged=0
-            )
-            
             return {
                 "status": "complete",
                 "progress": progress.to_dict(),
-                "scanRunId": scan_run_id,
                 "results": {
+                    "ingestionLogIds": [],
                     "summary": {
                         "addedCount": 0,
                         "updatedCount": 0,
@@ -256,14 +282,18 @@ class OutlookScanningService:
                 received_dt = msg.get("receivedDateTime", "")
                 logger.info(f"[SCAN {scan_run_id}] Processing email: id={msg['id'][:20]}..., subject='{subject[:50]}', from={sender_email}, received={received_dt}")
                 
-                # Fetch full message body
-                full_message = await outlook_service.get_message_body(
-                    access_token=access_token,
-                    message_id=msg["id"],
-                )
+                # Use body from initial request (already fetched with include_body=True)
+                # Only fetch separately if body is missing (fallback for truncated responses)
+                body = msg.get("body")
+                if not body:
+                    logger.debug(f"[SCAN {scan_run_id}] Body not in initial response, fetching separately")
+                    full_message = await outlook_service.get_message_body(
+                        access_token=access_token,
+                        message_id=msg["id"],
+                    )
+                    body = full_message.get("body", {})
                 
                 # Extract email content
-                body = full_message.get("body", {})
                 email_text = outlook_service.extract_plain_text_from_body(body)
                 
                 # Log body hash for debugging
@@ -271,8 +301,14 @@ class OutlookScanningService:
                 logger.info(f"[SCAN {scan_run_id}] Email body hash: {body_hash}, length: {len(email_text) if email_text else 0}")
                 
                 if not email_text or len(email_text.strip()) < 50:
-                    logger.info(f"[SCAN {scan_run_id}] Skipping email - body too short")
-                    results.append({"status": "skipped", "msg": msg})
+                    logger.info(f"[SCAN {scan_run_id}] Skipping email - body too short (length={len(email_text.strip()) if email_text else 0})")
+                    progress.skipped_reasons.append({
+                        "messageId": msg["id"][:20],
+                        "subject": subject[:50],
+                        "reason": "body_too_short",
+                        "bodyLength": len(email_text.strip()) if email_text else 0
+                    })
+                    results.append({"status": "skipped", "reason": "body_too_short", "msg": msg})
                     continue
                 
                 # Detect network
@@ -297,22 +333,34 @@ class OutlookScanningService:
                 added_count = len(changes.get("added", []))
                 updated_count = len(changes.get("updated", []))
                 merged_count = len(changes.get("merged", []))
-                logger.info(f"[SCAN {scan_run_id}] Email ingestion result: {added_count} added, {updated_count} updated, {merged_count} merged")
+                extracted_count = result.get("summary", {}).get("extractedCount", 0)
                 
-                # Log individual expert names for debugging
-                for added in changes.get("added", []):
-                    logger.info(f"[SCAN {scan_run_id}] ADDED: {added.get('expertName', 'Unknown')} (ID: {added.get('expertId', 'Unknown')})")
-                for updated in changes.get("updated", []):
-                    logger.info(f"[SCAN {scan_run_id}] UPDATED: {updated.get('expertName', 'Unknown')} (ID: {updated.get('expertId', 'Unknown')})")
-                for merged in changes.get("merged", []):
-                    logger.info(f"[SCAN {scan_run_id}] MERGED: {merged.get('keptExpertId', 'Unknown')} <- {merged.get('mergedExpertId', 'Unknown')}")
+                logger.info(f"[SCAN {scan_run_id}] Email extraction complete: extracted={extracted_count}, added={added_count}, updated={updated_count}, merged={merged_count}")
+                
+                # Track processing details for transparency
+                processing_detail = {
+                    "messageId": msg["id"][:20],
+                    "subject": subject[:50],
+                    "sender": sender_email,
+                    "network": network,
+                    "extractedCount": extracted_count,
+                    "addedCount": added_count,
+                    "updatedCount": updated_count,
+                    "mergedCount": merged_count,
+                    "addedExperts": [e.get("expertName") for e in changes.get("added", [])],
+                    "updatedExperts": [e.get("expertName") for e in changes.get("updated", [])],
+                }
+                progress.processed_details.append(processing_detail)
                 
                 # Track created expert IDs from this email
                 for added in changes.get("added", []):
                     scan_created_expert_ids.add(added["expertId"])
                     logger.info(f"[SCAN {scan_run_id}] Created expert: id={added['expertId']}, name={added['expertName']}")
                 
-                # Record that we scanned this email successfully
+                for updated in changes.get("updated", []):
+                    logger.info(f"[SCAN {scan_run_id}] Updated expert: id={updated['expertId']}, name={updated['expertName']}, fields={updated.get('fieldsUpdated', [])}")
+                
+                # Record that we scanned this email
                 await scanned_emails.record_scanned_email(
                     db=db,
                     project_id=project_id,
@@ -320,9 +368,6 @@ class OutlookScanningService:
                     email_subject=subject,
                     sender=sender_email,
                     received_at=msg.get("receivedDateTime"),
-                    internet_message_id=msg.get("internetMessageId"),
-                    subject_hash=hashlib.sha256(subject.encode()).hexdigest()[:16] if subject else None,
-                    status="processed",
                 )
                 
                 results.append({"status": "success", "result": result, "msg": msg})
@@ -338,36 +383,44 @@ class OutlookScanningService:
                         email_subject=msg.get("subject"),
                         sender=msg.get("from", {}).get("emailAddress", {}).get("address"),
                         received_at=msg.get("receivedDateTime"),
-                        internet_message_id=msg.get("internetMessageId"),
-                        subject_hash=hashlib.sha256(msg.get("subject", "").encode()).hexdigest()[:16] if msg.get("subject") else None,
-                        status="failed",
                     )
-                except Exception as record_error:
-                    logger.error(f"[SCAN {scan_run_id}] Failed to record failed email: {record_error}")
+                except:
+                    pass
                 results.append({"status": "error", "error": str(e), "msg": msg})
         
         # Aggregate results
+        logger.info(f"[SCAN {scan_run_id}] Aggregating results from {len(results)} email processing attempts")
         emails_processed = 0
-        emails_failed = 0
+        emails_with_extraction = 0
+        
         for r in results:
             progress.processed_emails += 1
             
             if r["status"] == "skipped":
                 progress.skipped_count += 1
+                logger.debug(f"[SCAN {scan_run_id}] Result: skipped - {r.get('reason', 'unknown')}")
             elif r["status"] == "error":
                 progress.error_count += 1
-                emails_failed += 1
-                progress.errors.append(f"Failed to process email '{r['msg'].get('subject', 'Unknown')}': {r['error']}")
+                error_msg = f"Failed to process email '{r['msg'].get('subject', 'Unknown')}': {r['error']}"
+                progress.errors.append(error_msg)
+                logger.error(f"[SCAN {scan_run_id}] Result: error - {error_msg}")
             elif r["status"] == "success":
                 result = r["result"]
                 email_ids.append(result.get("emailId"))
                 emails_processed += 1
                 
                 changes = result.get("changes", {})
-                all_changes["added"].extend(changes.get("added", []))
-                all_changes["updated"].extend(changes.get("updated", []))
+                added_in_email = changes.get("added", [])
+                updated_in_email = changes.get("updated", [])
+                
+                all_changes["added"].extend(added_in_email)
+                all_changes["updated"].extend(updated_in_email)
                 all_changes["merged"].extend(changes.get("merged", []))
                 all_changes["needsReview"].extend(changes.get("needsReview", []))
+                
+                # Track if this email actually extracted anything
+                if len(added_in_email) > 0 or len(updated_in_email) > 0:
+                    emails_with_extraction += 1
                 
                 # Aggregate snapshots (kept for now, will be removed with undo/redo)
                 snapshot = result.get("snapshot", {})
@@ -376,17 +429,12 @@ class OutlookScanningService:
                 all_snapshots["updatedExperts"].extend(snapshot.get("updatedExperts", []))
                 
                 progress.ingested_count += 1
+                logger.debug(f"[SCAN {scan_run_id}] Result: success - added={len(added_in_email)}, updated={len(updated_in_email)}")
+        
+        logger.info(f"[SCAN {scan_run_id}] Aggregation complete: processed={emails_processed}, with_extraction={emails_with_extraction}, skipped={progress.skipped_count}, errors={progress.error_count}")
         
         # Update sync timestamp
         await outlook_queries.update_sync_timestamp(db, connection["id"])
-        
-        # Update scan run with final progress
-        await scan_runs.update_scan_run_progress(
-            db, scan_run_id,
-            messages_processed=emails_processed,
-            messages_skipped=progress.skipped_count,
-            messages_failed=emails_failed
-        )
         
         # Build unified summary
         unified_summary = {
@@ -400,16 +448,6 @@ class OutlookScanningService:
             "source": "outlook_scan",
             "isNoOp": len(all_changes["added"]) == 0 and len(all_changes["updated"]) == 0,
         }
-        
-        logger.info(f"[SCAN {scan_run_id}] ===== SCAN COMPLETE =====")
-        logger.info(f"[SCAN {scan_run_id}] Final summary: {unified_summary}")
-        logger.info(f"[SCAN {scan_run_id}] Total experts added: {len(all_changes['added'])}")
-        logger.info(f"[SCAN {scan_run_id}] Total experts updated: {len(all_changes['updated'])}")
-        logger.info(f"[SCAN {scan_run_id}] Total experts merged: {len(all_changes['merged'])}")
-        logger.info(f"[SCAN {scan_run_id}] Emails processed: {emails_processed}")
-        logger.info(f"[SCAN {scan_run_id}] Emails failed: {emails_failed}")
-        logger.info(f"[SCAN {scan_run_id}] Emails skipped: {progress.skipped_count}")
-        logger.info(f"[SCAN {scan_run_id}] =================================")
         
         # Create ONE unified ingestion log for the entire scan
         unified_log = None
@@ -453,33 +491,59 @@ class OutlookScanningService:
                     merged_from_expert_id=merged["mergedExpertId"],
                 )
         
-        # Complete the scan run with final results
-        try:
-            await scan_runs.complete_scan_run(
-                db, scan_run_id,
-                status="completed",
-                experts_added=len(all_changes["added"]),
-                experts_updated=len(all_changes["updated"]),
-                experts_merged=len(all_changes["merged"]),
-                ingestion_log_id=unified_log["id"] if unified_log else None,
-                error_details=progress.errors if progress.errors else None
-            )
-        except Exception as e:
-            logger.error(f"[SCAN {scan_run_id}] Failed to complete scan run: {e}")
-        
         progress.stage = "complete"
         
-        return {
+        # Final summary logging
+        logger.info(f"[SCAN {scan_run_id}] === SCAN COMPLETE ===")
+        logger.info(f"[SCAN {scan_run_id}] Emails processed: {emails_processed}")
+        logger.info(f"[SCAN {scan_run_id}] Experts added: {len(all_changes['added'])}")
+        logger.info(f"[SCAN {scan_run_id}] Experts updated: {len(all_changes['updated'])}")
+        logger.info(f"[SCAN {scan_run_id}] Experts merged: {len(all_changes['merged'])}")
+        logger.info(f"[SCAN {scan_run_id}] Ingestion log ID: {unified_log['id'] if unified_log else 'None'}")
+        
+        # Log added expert names for verification
+        if all_changes['added']:
+            added_names = [e.get('expertName', 'Unknown') for e in all_changes['added']]
+            logger.info(f"[SCAN {scan_run_id}] Added experts: {added_names}")
+        
+        # Complete the ScanRun record with final results
+        if scan_run_record:
+            try:
+                await scan_runs.complete_scan_run(
+                    db=db,
+                    scan_run_id=scan_run_id,
+                    messages_processed=emails_processed,
+                    messages_skipped=progress.skipped_count,
+                    messages_failed=progress.error_count,
+                    experts_added=len(all_changes['added']),
+                    experts_updated=len(all_changes['updated']),
+                    experts_merged=len(all_changes['merged']),
+                    added_experts=all_changes['added'],
+                    updated_experts=all_changes['updated'],
+                    skipped_reasons=progress.skipped_reasons,
+                    errors=progress.errors,
+                    processed_details=progress.processed_details,
+                    ingestion_log_id=unified_log["id"] if unified_log else None,
+                )
+                logger.info(f"[SCAN {scan_run_id}] Completed ScanRun record in database")
+            except Exception as e:
+                logger.warning(f"[SCAN {scan_run_id}] Could not complete ScanRun record: {e}")
+        
+        final_result = {
             "status": "complete",
             "progress": progress.to_dict(),
-            "scanRunId": scan_run_id,
             "ingestionLogId": unified_log["id"] if unified_log else None,
+            "scanRunId": scan_run_id,  # Include scan run ID for frontend tracking
             "results": {
                 "summary": unified_summary,
                 "changes": all_changes,
             },
             "message": f"Processed {emails_processed} emails. {unified_summary['addedCount']} experts added, {unified_summary['updatedCount']} updated."
         }
+        
+        logger.debug(f"[SCAN {scan_run_id}] Final result summary: {json.dumps(unified_summary)}")
+        
+        return final_result
 
 
 # Singleton instance

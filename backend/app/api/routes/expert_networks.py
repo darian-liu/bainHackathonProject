@@ -10,7 +10,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.db.database import get_database
-from app.db.queries import projects, experts, emails, dedupe, ingestion_log, scan_runs
+from app.db.queries import projects, experts, emails, dedupe, ingestion_log
 from app.services.expert_extraction import ExpertExtractionService
 from app.services.expert_commit import ExpertCommitService
 from app.services.expert_export import export_experts_to_csv
@@ -364,6 +364,36 @@ async def list_ingestion_logs_route(project_id: str, limit: int = 10):
     return {"logs": logs}
 
 
+@router.get("/projects/{project_id}/scan-runs/latest")
+async def get_latest_scan_run_route(project_id: str):
+    """Get the most recent scan run for a project (authoritative scan metrics)."""
+    from app.db.queries import scan_runs
+    
+    db = await get_database()
+    
+    try:
+        scan_run = await scan_runs.get_latest_scan_run(db, project_id)
+        return {"scanRun": scan_run}
+    except Exception as e:
+        # Table may not exist yet
+        return {"scanRun": None, "error": str(e)}
+
+
+@router.get("/projects/{project_id}/scan-runs")
+async def list_scan_runs_route(project_id: str, limit: int = 10):
+    """List recent scan runs for a project."""
+    from app.db.queries import scan_runs
+    
+    db = await get_database()
+    
+    try:
+        runs = await scan_runs.list_scan_runs(db, project_id, limit)
+        return {"scanRuns": runs}
+    except Exception as e:
+        # Table may not exist yet
+        return {"scanRuns": [], "error": str(e)}
+
+
 @router.get("/projects/{project_id}/ingestion-logs/latest")
 async def get_latest_ingestion_log_route(project_id: str):
     """Get the most recent ingestion log."""
@@ -375,25 +405,6 @@ async def get_latest_ingestion_log_route(project_id: str):
     # Get full log with entries
     full_log = await ingestion_log.get_ingestion_log(db, log["id"])
     return {"log": full_log}
-
-
-@router.get("/projects/{project_id}/scan-runs/latest")
-async def get_latest_scan_run_route(project_id: str):
-    """Get the most recent scan run for authoritative scan metrics."""
-    db = await get_database()
-    scan_run = await scan_runs.get_latest_scan_run(db, project_id)
-    if not scan_run:
-        return {"scanRun": None}
-    
-    return {"scanRun": scan_run}
-
-
-@router.get("/projects/{project_id}/scan-runs")
-async def list_scan_runs_route(project_id: str, limit: int = 10):
-    """List recent scan runs for a project."""
-    db = await get_database()
-    runs = await scan_runs.list_scan_runs(db, project_id, limit)
-    return {"scanRuns": runs}
 
 
 # ============== Experts ============== #

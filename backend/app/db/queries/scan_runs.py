@@ -1,44 +1,45 @@
-"""Scan run database queries for tracking auto-scan executions."""
+"""ScanRun database queries for tracking auto-scan executions."""
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import databases
-import json
 import secrets
+import json
 
 
 async def create_scan_run(
     db: databases.Database,
     project_id: str,
-    max_emails: int,
+    max_emails: int = 10,
+    sender_domains: Optional[str] = None,
+    keywords: Optional[str] = None,
 ) -> dict:
     """Create a new scan run record."""
     scan_run_id = secrets.token_urlsafe(16)
-    now = datetime.utcnow()
-
+    now = datetime.utcnow().isoformat()
+    
     query = """
         INSERT INTO ScanRun (
-            id, projectId, startedAt, status, maxEmails
+            id, project_id, started_at, status, max_emails, sender_domains, keywords
         ) VALUES (
-            :id, :project_id, :started_at, :status, :max_emails
+            :id, :project_id, :started_at, :status, :max_emails, :sender_domains, :keywords
         )
     """
-
-    await db.execute(
-        query,
-        {
-            "id": scan_run_id,
-            "project_id": project_id,
-            "started_at": now.isoformat(),
-            "status": "running",
-            "max_emails": max_emails,
-        }
-    )
-
+    
+    await db.execute(query, {
+        "id": scan_run_id,
+        "project_id": project_id,
+        "started_at": now,
+        "status": "running",
+        "max_emails": max_emails,
+        "sender_domains": sender_domains,
+        "keywords": keywords,
+    })
+    
     return {
         "id": scan_run_id,
         "projectId": project_id,
-        "startedAt": now.isoformat(),
+        "startedAt": now,
         "status": "running",
         "maxEmails": max_emails,
     }
@@ -47,192 +48,164 @@ async def create_scan_run(
 async def update_scan_run_progress(
     db: databases.Database,
     scan_run_id: str,
-    messages_considered: Optional[int] = None,
-    messages_processed: Optional[int] = None,
-    messages_skipped: Optional[int] = None,
-    messages_failed: Optional[int] = None,
+    messages_fetched: Optional[int] = None,
+    messages_filtered: Optional[int] = None,
+    messages_already_scanned: Optional[int] = None,
 ) -> bool:
-    """Update scan run progress counters."""
+    """Update scan run with progress info."""
     updates = []
-    params = {"scan_run_id": scan_run_id}
+    values = {"id": scan_run_id}
     
-    if messages_considered is not None:
-        updates.append("messagesConsidered = :messages_considered")
-        params["messages_considered"] = messages_considered
-    
-    if messages_processed is not None:
-        updates.append("messagesProcessed = :messages_processed")
-        params["messages_processed"] = messages_processed
-    
-    if messages_skipped is not None:
-        updates.append("messagesSkipped = :messages_skipped")
-        params["messages_skipped"] = messages_skipped
-    
-    if messages_failed is not None:
-        updates.append("messagesFailed = :messages_failed")
-        params["messages_failed"] = messages_failed
+    if messages_fetched is not None:
+        updates.append("messages_fetched = :messages_fetched")
+        values["messages_fetched"] = messages_fetched
+    if messages_filtered is not None:
+        updates.append("messages_filtered = :messages_filtered")
+        values["messages_filtered"] = messages_filtered
+    if messages_already_scanned is not None:
+        updates.append("messages_already_scanned = :messages_already_scanned")
+        values["messages_already_scanned"] = messages_already_scanned
     
     if not updates:
         return True
     
-    query = f"""
-        UPDATE ScanRun 
-        SET {', '.join(updates)}, updatedAt = :updated_at
-        WHERE id = :scan_run_id
-    """
-    params["updated_at"] = datetime.utcnow().isoformat()
-    
-    result = await db.execute(query, params)
+    query = f"UPDATE ScanRun SET {', '.join(updates)} WHERE id = :id"
+    result = await db.execute(query, values)
     return result > 0
 
 
 async def complete_scan_run(
     db: databases.Database,
     scan_run_id: str,
-    status: str,  # "completed" or "failed"
-    experts_added: int = 0,
-    experts_updated: int = 0,
-    experts_merged: int = 0,
+    messages_processed: int,
+    messages_skipped: int,
+    messages_failed: int,
+    experts_added: int,
+    experts_updated: int,
+    experts_merged: int,
+    added_experts: List[Dict[str, Any]],
+    updated_experts: List[Dict[str, Any]],
+    skipped_reasons: List[Dict[str, Any]],
+    errors: List[str],
+    processed_details: List[Dict[str, Any]],
     ingestion_log_id: Optional[str] = None,
     error_message: Optional[str] = None,
-    error_details: Optional[List[str]] = None,
 ) -> bool:
-    """Mark scan run as completed or failed with final results."""
-    now = datetime.utcnow()
+    """Complete a scan run with final results."""
+    now = datetime.utcnow().isoformat()
+    status = "completed" if not error_message else "failed"
     
     query = """
-        UPDATE ScanRun 
-        SET 
-            completedAt = :completed_at,
+        UPDATE ScanRun SET
+            completed_at = :completed_at,
             status = :status,
-            expertsAdded = :experts_added,
-            expertsUpdated = :experts_updated,
-            expertsMerged = :experts_merged,
-            ingestionLogId = :ingestion_log_id,
-            errorMessage = :error_message,
-            errorDetails = :error_details,
-            updatedAt = :updated_at
-        WHERE id = :scan_run_id
+            messages_processed = :messages_processed,
+            messages_skipped = :messages_skipped,
+            messages_failed = :messages_failed,
+            experts_added = :experts_added,
+            experts_updated = :experts_updated,
+            experts_merged = :experts_merged,
+            added_experts_json = :added_experts_json,
+            updated_experts_json = :updated_experts_json,
+            skipped_reasons_json = :skipped_reasons_json,
+            errors_json = :errors_json,
+            processed_details_json = :processed_details_json,
+            ingestion_log_id = :ingestion_log_id,
+            error_message = :error_message
+        WHERE id = :id
     """
     
     result = await db.execute(query, {
-        "scan_run_id": scan_run_id,
-        "completed_at": now.isoformat(),
+        "id": scan_run_id,
+        "completed_at": now,
         "status": status,
+        "messages_processed": messages_processed,
+        "messages_skipped": messages_skipped,
+        "messages_failed": messages_failed,
         "experts_added": experts_added,
         "experts_updated": experts_updated,
         "experts_merged": experts_merged,
+        "added_experts_json": json.dumps(added_experts) if added_experts else None,
+        "updated_experts_json": json.dumps(updated_experts) if updated_experts else None,
+        "skipped_reasons_json": json.dumps(skipped_reasons) if skipped_reasons else None,
+        "errors_json": json.dumps(errors) if errors else None,
+        "processed_details_json": json.dumps(processed_details) if processed_details else None,
         "ingestion_log_id": ingestion_log_id,
         "error_message": error_message,
-        "error_details": json.dumps(error_details) if error_details else None,
-        "updated_at": now.isoformat(),
     })
     
     return result > 0
 
 
 async def get_scan_run(db: databases.Database, scan_run_id: str) -> Optional[dict]:
-    """Get scan run by ID."""
-    query = "SELECT * FROM ScanRun WHERE id = :scan_run_id"
-    row = await db.fetch_one(query, {"scan_run_id": scan_run_id})
-
+    """Get a scan run by ID."""
+    query = "SELECT * FROM ScanRun WHERE id = :id"
+    row = await db.fetch_one(query, {"id": scan_run_id})
+    
     if not row:
         return None
+    
+    return _row_to_dict(row)
 
-    return {
-        "id": row["id"],
-        "projectId": row["projectId"],
-        "startedAt": row["startedAt"],
-        "completedAt": row["completedAt"],
-        "status": row["status"],
-        "maxEmails": row["maxEmails"],
-        "messagesConsidered": row["messagesConsidered"],
-        "messagesProcessed": row["messagesProcessed"],
-        "messagesSkipped": row["messagesSkipped"],
-        "messagesFailed": row["messagesFailed"],
-        "expertsAdded": row["expertsAdded"],
-        "expertsUpdated": row["expertsUpdated"],
-        "expertsMerged": row["expertsMerged"],
-        "errorMessage": row["errorMessage"],
-        "errorDetails": json.loads(row["errorDetails"]) if row["errorDetails"] else None,
-        "ingestionLogId": row["ingestionLogId"],
-        "createdAt": row["createdAt"],
-        "updatedAt": row["updatedAt"],
-    }
+
+async def get_latest_scan_run(db: databases.Database, project_id: str) -> Optional[dict]:
+    """Get the most recent scan run for a project."""
+    query = """
+        SELECT * FROM ScanRun 
+        WHERE project_id = :project_id 
+        ORDER BY started_at DESC 
+        LIMIT 1
+    """
+    row = await db.fetch_one(query, {"project_id": project_id})
+    
+    if not row:
+        return None
+    
+    return _row_to_dict(row)
 
 
 async def list_scan_runs(
     db: databases.Database,
     project_id: str,
-    limit: int = 10
+    limit: int = 10,
 ) -> List[dict]:
     """List recent scan runs for a project."""
     query = """
-        SELECT * FROM ScanRun
-        WHERE projectId = :project_id
-        ORDER BY startedAt DESC
+        SELECT * FROM ScanRun 
+        WHERE project_id = :project_id 
+        ORDER BY started_at DESC 
         LIMIT :limit
     """
     rows = await db.fetch_all(query, {"project_id": project_id, "limit": limit})
-
-    return [
-        {
-            "id": row["id"],
-            "projectId": row["projectId"],
-            "startedAt": row["startedAt"],
-            "completedAt": row["completedAt"],
-            "status": row["status"],
-            "maxEmails": row["maxEmails"],
-            "messagesConsidered": row["messagesConsidered"],
-            "messagesProcessed": row["messagesProcessed"],
-            "messagesSkipped": row["messagesSkipped"],
-            "messagesFailed": row["messagesFailed"],
-            "expertsAdded": row["expertsAdded"],
-            "expertsUpdated": row["expertsUpdated"],
-            "expertsMerged": row["expertsMerged"],
-            "errorMessage": row["errorMessage"],
-            "errorDetails": json.loads(row["errorDetails"]) if row["errorDetails"] else None,
-            "ingestionLogId": row["ingestionLogId"],
-            "createdAt": row["createdAt"],
-            "updatedAt": row["updatedAt"],
-        }
-        for row in rows
-    ]
+    
+    return [_row_to_dict(row) for row in rows]
 
 
-async def get_latest_scan_run(
-    db: databases.Database,
-    project_id: str
-) -> Optional[dict]:
-    """Get the most recent scan run for a project."""
-    query = """
-        SELECT * FROM ScanRun
-        WHERE projectId = :project_id
-        ORDER BY startedAt DESC
-        LIMIT 1
-    """
-    row = await db.fetch_one(query, {"project_id": project_id})
-
-    if not row:
-        return None
-
+def _row_to_dict(row) -> dict:
+    """Convert a database row to a dictionary."""
     return {
         "id": row["id"],
-        "projectId": row["projectId"],
-        "startedAt": row["startedAt"],
-        "completedAt": row["completedAt"],
+        "projectId": row["project_id"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
         "status": row["status"],
-        "maxEmails": row["maxEmails"],
-        "messagesConsidered": row["messagesConsidered"],
-        "messagesProcessed": row["messagesProcessed"],
-        "messagesSkipped": row["messagesSkipped"],
-        "messagesFailed": row["messagesFailed"],
-        "expertsAdded": row["expertsAdded"],
-        "expertsUpdated": row["expertsUpdated"],
-        "expertsMerged": row["expertsMerged"],
-        "errorMessage": row["errorMessage"],
-        "errorDetails": json.loads(row["errorDetails"]) if row["errorDetails"] else None,
-        "ingestionLogId": row["ingestionLogId"],
-        "createdAt": row["createdAt"],
-        "updatedAt": row["updatedAt"],
+        "maxEmails": row["max_emails"],
+        "senderDomains": row["sender_domains"],
+        "keywords": row["keywords"],
+        "messagesFetched": row["messages_fetched"],
+        "messagesFiltered": row["messages_filtered"],
+        "messagesAlreadyScanned": row["messages_already_scanned"],
+        "messagesProcessed": row["messages_processed"],
+        "messagesSkipped": row["messages_skipped"],
+        "messagesFailed": row["messages_failed"],
+        "expertsAdded": row["experts_added"],
+        "expertsUpdated": row["experts_updated"],
+        "expertsMerged": row["experts_merged"],
+        "addedExperts": json.loads(row["added_experts_json"]) if row["added_experts_json"] else [],
+        "updatedExperts": json.loads(row["updated_experts_json"]) if row["updated_experts_json"] else [],
+        "skippedReasons": json.loads(row["skipped_reasons_json"]) if row["skipped_reasons_json"] else [],
+        "errors": json.loads(row["errors_json"]) if row["errors_json"] else [],
+        "processedDetails": json.loads(row["processed_details_json"]) if row["processed_details_json"] else [],
+        "ingestionLogId": row["ingestion_log_id"],
+        "errorMessage": row["error_message"],
     }
