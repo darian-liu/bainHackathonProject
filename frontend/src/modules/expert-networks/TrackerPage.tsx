@@ -6,7 +6,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, Mail } from 'lucide-react'
-import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
+import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useLatestScanRun, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,9 +23,16 @@ export function TrackerPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+
+  // State variables first
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+
+  // Then hook calls that depend on state
+  const { data: expertsData, isLoading, error, refetch } = useExperts(projectId!, statusFilter === 'all' ? undefined : statusFilter)
   const { data: projectData } = useProject(projectId!)
-  const { data, isLoading, refetch } = useExperts(projectId!)
   const { data: ingestionLogData, refetch: refetchLog } = useLatestIngestionLog(projectId!)
+  const { data: scanRunData, refetch: refetchScanRun } = useLatestScanRun(projectId!)
   const updateExpert = useUpdateExpert()
 
   const updateScreenerConfig = useUpdateScreenerConfig()
@@ -49,10 +56,16 @@ export function TrackerPage() {
     }
   } | null>(null)
 
+  // Ref to track if scan has been initiated (prevents re-triggering on re-renders)
+  const scanInitiatedRef = useRef(false)
+
   // Check for scanning query param and trigger scan
   useEffect(() => {
     const isScanning = searchParams.get('scanning') === 'true'
-    if (isScanning && projectId && !scanProgress) {
+    if (isScanning && projectId && !scanInitiatedRef.current) {
+      // Mark scan as initiated to prevent re-triggering
+      scanInitiatedRef.current = true
+
       // Start the scan
       setScanProgress({
         isScanning: true,
@@ -64,8 +77,13 @@ export function TrackerPage() {
       setSearchParams({})
 
       // Execute the scan (reduced to 10 emails for speed)
+      console.log(`[SCAN UI] Starting auto-scan for project ${projectId} with maxEmails=10`)
       autoScanInbox.mutateAsync({ projectId, maxEmails: 10 })
         .then((result) => {
+          console.log(`[SCAN UI] Scan completed successfully:`, result)
+          console.log(`[SCAN UI] Result summary:`, result.results?.summary)
+          console.log(`[SCAN UI] Extracting metrics: addedCount=${result.results?.summary?.addedCount}, updatedCount=${result.results?.summary?.updatedCount}, emailsProcessed=${result.results?.summary?.emailsProcessed}`)
+
           setScanProgress({
             isScanning: false,
             stage: 'complete',
@@ -76,11 +94,14 @@ export function TrackerPage() {
               emailsProcessed: result.results.summary.emailsProcessed,
             },
           })
+
+          console.log(`[SCAN UI] Updated scanProgress state with result metrics`)
           refetch()
           refetchLog()
           // Do NOT auto-dismiss - user must see the result
         })
         .catch((error) => {
+          console.error(`[SCAN UI] Scan failed:`, error)
           setScanProgress({
             isScanning: false,
             stage: 'error',
@@ -90,8 +111,6 @@ export function TrackerPage() {
     }
   }, [searchParams, projectId])
 
-  const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<string>('all')
   const [isExporting, setIsExporting] = useState(false)
   // showChangeSummary removed - summaries now always persist
   const [showScreenerConfig, setShowScreenerConfig] = useState(false)
@@ -266,9 +285,11 @@ export function TrackerPage() {
   }, [experts, statusFilter, searchQuery, sortConfig])
 
   const handleUpdate = async (expertId: string, field: keyof Expert, value: any) => {
+    if (!projectId) return
     try {
       await updateExpert.mutateAsync({
         expertId,
+        projectId,
         updates: { [field]: value },
       })
     } catch (error) {
@@ -463,7 +484,10 @@ export function TrackerPage() {
                   <p className="text-sm text-red-700">{scanProgress.message}</p>
                 </div>
                 <button
-                  onClick={() => setScanProgress(null)}
+                  onClick={() => {
+                    setScanProgress(null)
+                    scanInitiatedRef.current = false
+                  }}
                   className="ml-auto text-red-400 hover:text-red-600"
                 >
                   <X className="w-4 h-4" />
@@ -475,12 +499,21 @@ export function TrackerPage() {
                 <div className="flex-1">
                   <p className="font-medium text-green-900">Inbox Scan Complete</p>
                   <p className="text-sm text-green-700">
-                    {scanProgress.result?.emailsProcessed || 0} emails processed •
-                    {scanProgress.result?.addedCount || 0} experts added •
-                    {scanProgress.result?.updatedCount || 0} updated
+                    {scanProgress.result?.emailsProcessed || 0} emails processed •{' '}
+                    <span className="font-semibold text-green-800">{scanProgress.result?.addedCount || 0} experts added</span> •{' '}
+                    <span className="font-semibold text-blue-700">{scanProgress.result?.updatedCount || 0} updated</span>
                   </p>
                 </div>
-                {/* No dismiss button - summary persists until next action */}
+                <button
+                  onClick={() => {
+                    setScanProgress(null)
+                    scanInitiatedRef.current = false
+                  }}
+                  className="ml-auto text-green-400 hover:text-green-600"
+                  title="Dismiss"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </>
             )}
           </div>

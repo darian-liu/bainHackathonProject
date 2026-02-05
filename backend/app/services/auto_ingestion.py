@@ -42,13 +42,18 @@ class AutoIngestionService:
         project_hypothesis: str,
         screener_config: Optional[dict],
         auto_merge_threshold: float = 0.85,
-        skip_log: bool = False
+        skip_log: bool = False,
+        scan_created_expert_ids: Optional[set] = None
     ) -> dict:
         """
         Perform complete auto-ingestion: extract, commit, dedupe, and log.
         
         Args:
             skip_log: If True, skip creating ingestion log (caller will create unified log)
+            scan_created_expert_ids: Optional set to track expert IDs created across multiple
+                                     emails in a single scan run. If provided, experts in this
+                                     set are considered "created in this scan" and won't be
+                                     marked as "updated" if seen again.
         
         Returns:
             dict with:
@@ -63,6 +68,12 @@ class AutoIngestionService:
             "merged": [],     # Experts auto-merged
             "needsReview": [] # Low-confidence duplicates
         }
+        
+        # Track expert IDs created in this ingestion to preserve "added" status
+        # This prevents newly created experts from being marked as "updated" if they
+        # get modified within the same ingestion process
+        # If scan_created_expert_ids is provided, use it (for multi-email scans)
+        created_expert_ids = scan_created_expert_ids if scan_created_expert_ids is not None else set()
         
         # Step 1: Create email record
         email = await emails.create_email(
@@ -95,24 +106,34 @@ class AutoIngestionService:
             existing = await self._find_matching_expert(db, project_id, extracted)
             
             if existing:
-                # Update existing expert
-                update_result = await self._update_existing_expert(
-                    db, existing, extracted, email["id"], network, raw_response, prompt
-                )
-                if update_result["updated_fields"]:
-                    changes["updated"].append({
-                        "expertId": existing["id"],
-                        "expertName": existing["canonicalName"],
-                        "fieldsUpdated": update_result["updated_fields"],
-                        "previousValues": update_result["previous_values"],
-                        "newValues": update_result["new_values"]
-                    })
+                # Check if this expert was created in this scan run
+                # If so, just add a source but don't count as "updated"
+                if existing["id"] in created_expert_ids:
+                    # Expert was created earlier in this scan - just add source, no update count
+                    await self._create_expert_source(
+                        db, existing["id"], email["id"], extracted, network, raw_response, prompt
+                    )
+                    # Don't add to changes - expert already counted as "added"
+                else:
+                    # Truly existing expert from before this scan - check for updates
+                    update_result = await self._update_existing_expert(
+                        db, existing, extracted, email["id"], network, raw_response, prompt
+                    )
+                    if update_result["updated_fields"]:
+                        changes["updated"].append({
+                            "expertId": existing["id"],
+                            "expertName": existing["canonicalName"],
+                            "fieldsUpdated": update_result["updated_fields"],
+                            "previousValues": update_result["previous_values"],
+                            "newValues": update_result["new_values"]
+                        })
             else:
                 # Create new expert
                 expert = await self._create_expert(
                     db, project_id, extracted, email["id"], network, raw_response, prompt
                 )
                 created_experts.append(expert)
+                created_expert_ids.add(expert["id"])  # Track this expert as newly created
                 changes["added"].append({
                     "expertId": expert["id"],
                     "expertName": expert["canonicalName"]
@@ -139,6 +160,11 @@ class AutoIngestionService:
                             candidate.expert_id_a,
                             candidate.expert_id_b
                         )
+                        
+                        # If we're merging a newly created expert, remove it from created_expert_ids
+                        # since it will be merged into an existing expert
+                        if candidate.expert_id_b in created_expert_ids:
+                            created_expert_ids.remove(candidate.expert_id_b)
                         
                         changes["merged"].append({
                             "keptExpertId": candidate.expert_id_a,
@@ -238,16 +264,19 @@ class AutoIngestionService:
             )
         
         for updated in changes["updated"]:
-            await ingestion_log.create_ingestion_log_entry(
-                db,
-                ingestion_log_id=log["id"],
-                action="updated",
-                expert_id=updated["expertId"],
-                expert_name=updated["expertName"],
-                fields_changed=updated.get("fieldsUpdated"),
-                previous_values=updated.get("previousValues"),
-                new_values=updated.get("newValues")
-            )
+            # Skip logging "updated" if this expert was created in this ingestion
+            # (they should only appear as "added")
+            if updated["expertId"] not in created_expert_ids:
+                await ingestion_log.create_ingestion_log_entry(
+                    db,
+                    ingestion_log_id=log["id"],
+                    action="updated",
+                    expert_id=updated["expertId"],
+                    expert_name=updated["expertName"],
+                    fields_changed=updated.get("fieldsUpdated"),
+                    previous_values=updated.get("previousValues"),
+                    new_values=updated.get("newValues")
+                )
         
         for merged in changes["merged"]:
             await ingestion_log.create_ingestion_log_entry(

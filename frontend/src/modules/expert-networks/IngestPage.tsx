@@ -77,16 +77,20 @@ export function IngestPage() {
   const handleAutoScan = async () => {
     if (!projectId) return
 
+    console.log(`[SCAN UI] IngestPage: Starting auto-scan for project ${projectId}`)
     setIngestMode('scanning')
 
     try {
       // Navigate to tracker immediately with scanning state
+      console.log(`[SCAN UI] IngestPage: Navigating to tracker with scanning=true`)
       navigate(`/expert-networks/${projectId}/tracker?scanning=true`)
 
       // Start the scan (this will be picked up by TrackerPage)
+      console.log(`[SCAN UI] IngestPage: Calling autoScanInbox with maxEmails=50`)
       await autoScanInbox.mutateAsync({ projectId, maxEmails: 50 })
+      console.log(`[SCAN UI] IngestPage: Auto-scan completed successfully`)
     } catch (error) {
-      console.error('Auto-scan failed:', error)
+      console.error(`[SCAN UI] IngestPage: Auto-scan failed:`, error)
       // Navigate back with error
       navigate(`/expert-networks/${projectId}/ingest?scan_error=true`)
     }

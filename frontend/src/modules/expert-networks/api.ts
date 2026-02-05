@@ -145,6 +145,29 @@ export const expertNetworksApi = {
     return res.json()
   },
 
+  // Get latest scan run
+  getLatestScanRun: async (
+    projectId: string
+  ): Promise<{ scanRun: import('./types').ScanRun | null }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs/latest`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan run')
+    return res.json()
+  },
+
+  // List scan runs
+  listScanRuns: async (
+    projectId: string,
+    limit: number = 10
+  ): Promise<{ scanRuns: import('./types').ScanRun[] }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/scan-runs?limit=${limit}`
+    )
+    if (!res.ok) throw new Error('Failed to fetch scan runs')
+    return res.json()
+  },
+
   // Screen expert
   screenExpert: async (
     expertId: string,
@@ -477,6 +500,22 @@ export function useLatestIngestionLog(projectId: string) {
   })
 }
 
+export function useLatestScanRun(projectId: string) {
+  return useQuery({
+    queryKey: ['scan-run', projectId],
+    queryFn: () => expertNetworksApi.getLatestScanRun(projectId),
+    enabled: !!projectId,
+  })
+}
+
+export function useScanRuns(projectId: string, limit: number = 10) {
+  return useQuery({
+    queryKey: ['scan-runs', projectId, limit],
+    queryFn: () => expertNetworksApi.listScanRuns(projectId, limit),
+    enabled: !!projectId,
+  })
+}
+
 export function useUpdateScreenerConfig() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -527,6 +566,8 @@ export function useAutoScanInbox() {
       queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
       queryClient.invalidateQueries({ queryKey: ['duplicates', variables.projectId] })
       queryClient.invalidateQueries({ queryKey: ['ingestion-log', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['scan-run', variables.projectId] })
+      queryClient.invalidateQueries({ queryKey: ['scan-runs', variables.projectId] })
     },
   })
 }
@@ -546,7 +587,6 @@ export function useUpdateExpert() {
     mutationFn: ({
       expertId,
       updates,
-      projectId,
     }: {
       expertId: string
       updates: Partial<Expert>
@@ -598,7 +638,7 @@ export function useDuplicates(projectId: string, status?: string) {
 export function useMergeDuplicates() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ candidateId, projectId }: { candidateId: string; projectId: string }) =>
+    mutationFn: ({ candidateId }: { candidateId: string; projectId: string }) =>
       expertNetworksApi.mergeDuplicates(candidateId),
     onSuccess: (_, variables) => {
       // Invalidate only the specific project to avoid stale data from other projects
@@ -611,7 +651,7 @@ export function useMergeDuplicates() {
 export function useMarkNotSame() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ candidateId, projectId }: { candidateId: string; projectId: string }) =>
+    mutationFn: ({ candidateId }: { candidateId: string; projectId: string }) =>
       expertNetworksApi.markNotSame(candidateId),
     onSuccess: (_, variables) => {
       // Invalidate only the specific project to avoid stale data from other projects

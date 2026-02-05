@@ -272,11 +272,33 @@ export interface AutoScanProgress {
   errors: string[]
 }
 
+export interface ScanRun {
+  id: string
+  projectId: string
+  startedAt: string
+  completedAt?: string | null
+  status: 'running' | 'completed' | 'failed'
+  maxEmails: number
+  messagesConsidered: number
+  messagesProcessed: number
+  messagesSkipped: number
+  messagesFailed: number
+  expertsAdded: number
+  expertsUpdated: number
+  expertsMerged: number
+  errorMessage?: string | null
+  errorDetails?: string[] | null
+  ingestionLogId?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AutoScanResult {
   status: 'scanning' | 'complete' | 'error'
   progress: AutoScanProgress
+  scanRunId?: string
+  ingestionLogId?: string | null
   results: {
-    ingestionLogIds: string[]
     summary: IngestionSummary & {
       emailsProcessed: number
       emailsSkipped: number

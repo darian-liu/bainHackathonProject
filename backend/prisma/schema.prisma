@@ -21,6 +21,7 @@ model Project {
   emails           Email[]
   experts          Expert[]
   dedupeCandidates DedupeCandidate[]
+  scanRuns         ScanRun[]
 }
 
 // Email stores raw ingested email content
@@ -194,4 +195,43 @@ model PendingUpdate {
 
   @@index([expertId])
   @@index([status])
+}
+
+// ScanRun tracks each auto-scan execution for reliable metrics
+model ScanRun {
+  id                    String   @id @default(cuid())
+  projectId             String
+  startedAt             DateTime @default(now())
+  completedAt           DateTime?
+  status                String   @default("running") // running, completed, failed
+  
+  // Scan parameters
+  maxEmails             Int
+  
+  // Message counts
+  messagesConsidered    Int      @default(0)
+  messagesProcessed     Int      @default(0)
+  messagesSkipped       Int      @default(0)
+  messagesFailed        Int      @default(0)
+  
+  // Expert counts
+  expertsAdded          Int      @default(0)
+  expertsUpdated        Int      @default(0)
+  expertsMerged         Int      @default(0)
+  
+  // Error tracking
+  errorMessage          String?
+  errorDetails          String?  // JSON array of individual errors
+  
+  // Results
+  ingestionLogId        String?
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([status])
+  @@index([startedAt])
 }
