@@ -74,6 +74,8 @@ export const dataRoomApi = {
 export interface SettingsData {
   document_source_mode: string
   openai_api_key: string
+  openai_base_url: string
+  openai_model: string
   graph_client_id: string
   graph_client_secret: string
   graph_tenant_id: string

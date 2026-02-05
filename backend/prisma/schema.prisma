@@ -1,0 +1,197 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Project represents a due diligence or research project
+model Project {
+  id             String   @id @default(cuid())
+  name           String
+  hypothesisText String   // Case hypothesis/focus for AI recommendations
+  networks       String?  // JSON array of network names (optional)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  emails           Email[]
+  experts          Expert[]
+  dedupeCandidates DedupeCandidate[]
+}
+
+// Email stores raw ingested email content
+model Email {
+  id          String   @id @default(cuid())
+  projectId   String
+  network     String?  // Inferred or user-selected network
+  networkInferenceConfidence String? // low/medium/high
+  receivedAt  DateTime? // Parsed from email if available
+  rawText     String   // Full raw email text
+  contentHash String   // SHA256(network + rawText) for idempotency
+
+  // Extraction result storage (for selective commit)
+  extractionResultJson String?  // Full extraction result as JSON
+  extractionPrompt     String?  // OpenAI prompt used
+  extractionResponse   String?  // Raw OpenAI response
+
+  createdAt   DateTime @default(now())
+
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  expertSources  ExpertSource[]
+  pendingUpdates PendingUpdate[]
+
+  @@unique([projectId, contentHash])
+  @@index([projectId])
+}
+
+// Expert is the canonical/deduplicated expert entity
+model Expert {
+  id                String   @id @default(cuid())
+  projectId         String
+  canonicalName     String
+  canonicalEmployer String?
+  canonicalTitle    String?
+
+  // Status tracking
+  status            String   @default("recommended") // recommended, awaiting_screeners, screened_out, shortlisted, requested, scheduled, completed, unresponsive, conflict, declined
+  statusUpdatedAt   DateTime @default(now())
+
+  // Conflict tracking
+  conflictStatus    String?  // cleared, pending, conflict
+  conflictId        String?
+
+  // Interview tracking
+  interviewDate     DateTime?
+  leadInterviewer   String?
+  interviewLength   Float?   // Hours
+
+  // Hypothesis match
+  hypothesisNotes   String?  // Short text
+  hypothesisMatch   String?  // yes, no, unknown
+
+  // AI recommendation
+  aiRecommendation       String?  // strong_fit, maybe, low_fit
+  aiRecommendationRationale String?
+  aiRecommendationConfidence String? // low, medium, high
+  aiRecommendationRaw    String?  // Raw OpenAI response for audit
+  aiRecommendationPrompt String?  // Input prompt for audit
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sources          ExpertSource[]
+  userEdits        UserEdit[]
+  pendingUpdates   PendingUpdate[]
+  dedupeCandidatesA DedupeCandidate[] @relation("ExpertA")
+  dedupeCandidatesB DedupeCandidate[] @relation("ExpertB")
+
+  @@index([projectId])
+  @@index([canonicalName])
+}
+
+// ExpertSource links an expert to the email source and extracted data
+model ExpertSource {
+  id            String   @id @default(cuid())
+  expertId      String
+  emailId       String
+  network       String?
+
+  // Extracted fields as JSON
+  extractedJson String   // Full extracted data as JSON
+
+  // Key extracted fields for quick access
+  extractedName      String?
+  extractedEmployer  String?
+  extractedTitle     String?
+  extractedBio       String?  // Relevance bullets / short bio
+  extractedScreener  String?  // Screener responses (JSON)
+  extractedAvailability String? // Availability windows
+  extractedStatusCue String?  // Explicit status cues from email
+
+  // Raw OpenAI response for audit
+  openaiResponse String?
+  openaiPrompt   String?
+
+  createdAt     DateTime @default(now())
+
+  expert      Expert            @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  email       Email             @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  provenance  FieldProvenance[]
+
+  @@index([expertId])
+  @@index([emailId])
+}
+
+// FieldProvenance stores the source excerpt for each extracted field
+model FieldProvenance {
+  id              String  @id @default(cuid())
+  expertSourceId  String
+  fieldName       String  // e.g., "name", "employer", "title"
+  excerptText     String  // The text excerpt used for extraction
+  charStart       Int?    // Optional character offset start
+  charEnd         Int?    // Optional character offset end
+  confidence      String? // low, medium, high
+
+  expertSource ExpertSource @relation(fields: [expertSourceId], references: [id], onDelete: Cascade)
+
+  @@index([expertSourceId])
+}
+
+// DedupeCandidate tracks potential duplicate expert pairs
+model DedupeCandidate {
+  id         String   @id @default(cuid())
+  projectId  String
+  expertIdA  String
+  expertIdB  String
+  score      Float    // Similarity score
+  matchType  String   // strong_name_employer, medium_name_roles, fuzzy_name_employer
+  status     String   @default("pending") // pending, merged, not_same
+  createdAt  DateTime @default(now())
+  resolvedAt DateTime?
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  expertA  Expert  @relation("ExpertA", fields: [expertIdA], references: [id], onDelete: Cascade)
+  expertB  Expert  @relation("ExpertB", fields: [expertIdB], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, expertIdA, expertIdB])
+  @@index([projectId])
+  @@index([status])
+}
+
+// UserEdit tracks manual edits to expert fields
+model UserEdit {
+  id            String   @id @default(cuid())
+  expertId      String
+  fieldName     String
+  userValueJson String   // The value the user set (JSON)
+  previousValueJson String? // Previous value before edit
+  createdAt     DateTime @default(now())
+
+  expert Expert @relation(fields: [expertId], references: [id], onDelete: Cascade)
+
+  @@index([expertId])
+}
+
+// PendingUpdate tracks conflicts between extraction and user edits
+model PendingUpdate {
+  id               String   @id @default(cuid())
+  expertId         String
+  fieldName        String
+  proposedValueJson String  // New value from extraction
+  currentValueJson  String? // Current value that would be overwritten
+  sourceEmailId    String
+  status           String   @default("pending") // pending, accepted, rejected
+  createdAt        DateTime @default(now())
+  resolvedAt       DateTime?
+
+  expert Expert @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  sourceEmail Email @relation(fields: [sourceEmailId], references: [id], onDelete: Cascade)
+
+  @@index([expertId])
+  @@index([status])
+}

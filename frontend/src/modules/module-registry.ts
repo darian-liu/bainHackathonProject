@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 import { DataRoomModule } from './data-room'
 import { SettingsModule } from './settings'
+import { ExpertNetworksModule } from './expert-networks'
 
 export interface WorkflowModule {
   id: string
@@ -13,6 +14,6 @@ export interface WorkflowModule {
 
 export const modules: WorkflowModule[] = [
   DataRoomModule,
+  ExpertNetworksModule,
   SettingsModule,
-  // Add ExpertNetworkModule here when ready
 ]

@@ -115,22 +115,36 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* OpenAI Configuration */}
+      {/* OpenAI / Portkey Configuration */}
       <Card>
         <CardHeader>
-          <CardTitle>OpenAI Configuration</CardTitle>
+          <CardTitle>OpenAI / Portkey Configuration</CardTitle>
           <CardDescription>
-            Required for document embeddings and chat functionality
+            Required for document embeddings, chat, and expert extraction. At Bain, use Portkey gateway with @personal-openai/ model prefix.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <CredentialInput
             label="OpenAI API Key"
-            description="Your OpenAI API key for embeddings and chat"
+            description="Your OpenAI or Portkey API key"
             value={getDisplayValue('openai_api_key')}
             onChange={(v) => handleFieldChange('openai_api_key', v)}
-            placeholder="sk-..."
+            placeholder="sk-... or Portkey API key"
             isSecret
+          />
+          <CredentialInput
+            label="OpenAI Base URL"
+            description="Optional: Portkey or other OpenAI-compatible gateway URL (leave empty for direct OpenAI)"
+            value={getDisplayValue('openai_base_url')}
+            onChange={(v) => handleFieldChange('openai_base_url', v)}
+            placeholder="https://api.portkey.ai/v1"
+          />
+          <CredentialInput
+            label="OpenAI Model"
+            description="Model to use (Bain: use @personal-openai/gpt-4o format for Portkey)"
+            value={getDisplayValue('openai_model')}
+            onChange={(v) => handleFieldChange('openai_model', v)}
+            placeholder="@personal-openai/gpt-4o"
           />
         </CardContent>
       </Card>

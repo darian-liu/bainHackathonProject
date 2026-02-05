@@ -13,7 +13,7 @@ function App() {
         {modules.map((module) => (
           <Route
             key={module.id}
-            path={module.path}
+            path={`${module.path}/*`}
             element={<module.component />}
           />
         ))}

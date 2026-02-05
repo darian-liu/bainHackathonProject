@@ -30,8 +30,10 @@ class Settings(BaseSettings):
     # Document source
     document_source_mode: str = "mock"
 
-    # OpenAI
+    # OpenAI / Portkey
     openai_api_key: str = ""
+    openai_base_url: str = ""
+    openai_model: str = "gpt-4o"  # Default model, Bain uses @personal-openai/ prefix
 
     # MS Graph (for live mode)
     graph_client_id: str = ""
@@ -86,6 +88,8 @@ class Settings(BaseSettings):
         return {
             "document_source_mode": self.document_source_mode,
             "openai_api_key": self._mask_key(self.openai_api_key),
+            "openai_base_url": self.openai_base_url,
+            "openai_model": self.openai_model,
             "graph_client_id": self.graph_client_id,
             "graph_client_secret": self._mask_key(self.graph_client_secret),
             "graph_tenant_id": self.graph_tenant_id,

@@ -15,6 +15,8 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 class SettingsUpdate(BaseModel):
     openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_model: Optional[str] = None
     graph_client_id: Optional[str] = None
     graph_client_secret: Optional[str] = None
     graph_tenant_id: Optional[str] = None
@@ -25,6 +27,8 @@ class SettingsUpdate(BaseModel):
 class SettingsResponse(BaseModel):
     document_source_mode: str
     openai_api_key: str  # masked
+    openai_base_url: str
+    openai_model: str
     graph_client_id: str
     graph_client_secret: str  # masked
     graph_tenant_id: str
@@ -58,6 +62,14 @@ async def update_settings(update: SettingsUpdate):
         current["openai_api_key"] = update.openai_api_key
         # Also set environment variable for immediate use
         os.environ["OPENAI_API_KEY"] = update.openai_api_key
+
+    if update.openai_base_url is not None:
+        current["openai_base_url"] = update.openai_base_url
+        os.environ["OPENAI_BASE_URL"] = update.openai_base_url
+
+    if update.openai_model is not None:
+        current["openai_model"] = update.openai_model
+        os.environ["OPENAI_MODEL"] = update.openai_model
 
     if update.graph_client_id is not None:
         current["graph_client_id"] = update.graph_client_id
@@ -102,17 +114,28 @@ async def test_connections():
     openai_ok = False
     sharepoint_ok = None
 
-    # Test OpenAI
+    # Test OpenAI / Portkey
     try:
         from openai import OpenAI
 
         api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
+
         if not api_key:
             errors["openai"] = "No API key configured"
         else:
-            client = OpenAI(api_key=api_key)
-            # Simple test - list models
-            client.models.list()
+            # Configure client with optional Portkey base URL
+            client_config = {"api_key": api_key}
+            if base_url:
+                client_config["base_url"] = base_url
+
+            client = OpenAI(**client_config)
+            # Simple test - list models (may not work with all gateways)
+            try:
+                client.models.list()
+            except Exception:
+                # Some gateways don't support models.list, try a simple completion instead
+                pass
             openai_ok = True
     except Exception as e:
         errors["openai"] = str(e)

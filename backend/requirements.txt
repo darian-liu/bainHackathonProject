@@ -26,3 +26,7 @@ slowapi>=0.1.9
 
 # Async support
 aiofiles>=23.0.0
+
+# Expert Networks Module - Database
+databases>=0.8.0
+aiosqlite>=0.19.0

@@ -8,9 +8,10 @@ from slowapi.errors import RateLimitExceeded
 # Load environment variables
 load_dotenv()
 
-from app.api.routes import data_room, settings
+from app.api.routes import data_room, settings, expert_networks
 from app.api import websocket
 from app.core.config import settings as app_settings
+from app.db.database import connect_db, disconnect_db
 
 # Rate limiter setup
 limiter = Limiter(key_func=get_remote_address)
@@ -44,6 +45,7 @@ app.add_middleware(
 # Include routers
 app.include_router(data_room.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(expert_networks.router, prefix="/api")
 app.include_router(websocket.router)
 
 
@@ -59,3 +61,15 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.on_event("startup")
+async def startup():
+    """Connect to database on startup."""
+    await connect_db()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Disconnect from database on shutdown."""
+    await disconnect_db()
