@@ -6,7 +6,7 @@ from app.services.document_parser import DocumentParser
 from app.services.vector_store import get_vector_store
 
 
-SUPPORTED_EXTENSIONS = [".pdf", ".docx", ".pptx"]
+SUPPORTED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".txt", ".md"]
 
 
 @dataclass
@@ -106,3 +106,84 @@ async def ingest_documents(
             results.append(IngestResult(file=file.name, status="error", error=str(e)))
 
     return results
+
+
+async def ingest_single_file(
+    file_path: str,
+    filename: str,
+    vector_store=None,
+    folder_id: str = "uploads"
+) -> IngestResult:
+    """
+    Ingest a single file from a local path.
+
+    Args:
+        file_path: Path to the file to ingest
+        filename: Original filename
+        vector_store: Optional vector store (uses default if not provided)
+        folder_id: Folder ID for metadata
+
+    Returns:
+        IngestResult with status and chunk count
+    """
+    import secrets
+
+    if vector_store is None:
+        vector_store = get_vector_store()
+
+    parser = DocumentParser()
+
+    try:
+        # Check file extension
+        if not any(filename.lower().endswith(ext) for ext in SUPPORTED_EXTENSIONS):
+            return IngestResult(
+                file=filename,
+                status="skipped",
+                reason="Unsupported file type"
+            )
+
+        # Read file content
+        with open(file_path, "rb") as f:
+            content = f.read()
+
+        # Parse and chunk
+        text = parser.parse(content, filename)
+        chunks = parser.chunk(text)
+
+        if not chunks:
+            return IngestResult(
+                file=filename,
+                status="skipped",
+                reason="No text extracted"
+            )
+
+        # Generate file ID
+        file_id = secrets.token_urlsafe(16)
+
+        # Create IDs and metadata
+        ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
+        metadata = [
+            {
+                "file_id": file_id,
+                "filename": filename,
+                "chunk_index": i,
+                "folder_id": folder_id,
+            }
+            for i in range(len(chunks))
+        ]
+
+        # Add to vector store
+        vector_store.add_documents(chunks, metadata, ids)
+
+        return IngestResult(
+            file=filename,
+            status="success",
+            chunks=len(chunks)
+        )
+
+    except Exception as e:
+        return IngestResult(
+            file=filename,
+            status="error",
+            error=str(e)
+        )

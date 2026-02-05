@@ -127,18 +127,33 @@ export const expertNetworksApi = {
 
   recommendExpert: async (
     expertId: string,
-    projectId: string
+    projectId: string,
+    includeDocumentContext: boolean = false
   ): Promise<{
     recommendation: string
     rationale: string
     confidence: string
+    // Enhanced fields when document context is enabled
+    background_fit_score?: number
+    screener_quality_score?: number
+    document_relevance_score?: number
+    red_flags_score?: number
+    overall_score?: number
+    relevant_documents?: Array<{
+      filename: string
+      relevance_score: number
+      matched_topics: string[]
+    }>
   }> => {
     const res = await fetch(
       `${API_BASE}/api/expert-networks/experts/${expertId}/recommend`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({
+          projectId,
+          include_document_context: includeDocumentContext,
+        }),
       }
     )
     if (!res.ok) {
@@ -294,8 +309,15 @@ export function useExpertSources(expertId: string) {
 export function useRecommendExpert() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ expertId, projectId }: { expertId: string; projectId: string }) =>
-      expertNetworksApi.recommendExpert(expertId, projectId),
+    mutationFn: ({
+      expertId,
+      projectId,
+      includeDocumentContext = false,
+    }: {
+      expertId: string
+      projectId: string
+      includeDocumentContext?: boolean
+    }) => expertNetworksApi.recommendExpert(expertId, projectId, includeDocumentContext),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['experts'] })
     },

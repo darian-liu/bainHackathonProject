@@ -103,3 +103,31 @@ class ExpertUpdate(BaseModel):
     """Expert field update model."""
     field: str
     value: Optional[str] = None
+
+
+class DocumentRelevance(BaseModel):
+    """Document relevance for expert screening."""
+    filename: str = Field(description="Name of the relevant document")
+    relevance_score: float = Field(description="Relevance score from 0-1")
+    matched_topics: List[str] = Field(description="Topics that matched between expert and document")
+
+
+class AIScreeningResultWithDocs(BaseModel):
+    """AI screening result enhanced with document context."""
+    # Base recommendation fields
+    recommendation: Literal["strong_fit", "maybe", "low_fit"] = Field(description="Fit recommendation")
+    rationale: str = Field(description="1-2 sentence explanation")
+    confidence: ConfidenceLevel = Field(description="Confidence in recommendation")
+    missingInfo: Optional[List[str]] = Field(None, description="Key missing information")
+
+    # Enhanced scoring breakdown
+    background_fit_score: int = Field(description="Background fit score 0-100")
+    screener_quality_score: int = Field(description="Screener quality score 0-100")
+    document_relevance_score: int = Field(description="Document relevance score 0-100")
+    red_flags_score: int = Field(description="Red flags deduction 0-100 (higher = fewer red flags)")
+
+    # Document context
+    relevant_documents: Optional[List[DocumentRelevance]] = Field(
+        None, description="Documents relevant to this expert"
+    )
+    overall_score: int = Field(description="Weighted overall score 0-100")

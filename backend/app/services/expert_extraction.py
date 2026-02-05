@@ -7,6 +7,8 @@ from app.core.config import settings
 from app.schemas.expert_extraction import (
     EmailExtractionResult,
     AIRecommendation,
+    AIScreeningResultWithDocs,
+    DocumentRelevance,
     ExtractedExpert
 )
 
@@ -76,6 +78,36 @@ CRITICAL RULES:
 2. Never over-recommend based on assumptions.
 3. List what information is missing that would increase confidence.
 4. Keep rationale to 1-2 concise sentences."""
+
+
+DOCUMENT_SCREENING_SYSTEM_PROMPT = """You are an expert at evaluating experts for consulting engagements.
+Given an expert's profile, a project hypothesis, AND relevant document context, score the expert across multiple dimensions.
+
+SCORING DIMENSIONS (all scores 0-100):
+
+1. BACKGROUND FIT (30% weight):
+   - How well does the expert's employer, title, and experience match the project needs?
+   - Consider industry, role level, and functional expertise
+
+2. SCREENER QUALITY (30% weight):
+   - How thorough and relevant are the screener responses?
+   - Do they demonstrate deep knowledge of the topics?
+
+3. DOCUMENT RELEVANCE (25% weight):
+   - How well does the expert's background align with the provided document context?
+   - Are there specific topics in the documents that match their expertise?
+
+4. RED FLAGS (15% weight - higher score = fewer red flags):
+   - Are there conflicts of interest?
+   - Is their experience too dated?
+   - Any gaps or inconsistencies?
+
+RECOMMENDATION LEVELS:
+- "strong_fit": Overall score >= 75 and no critical red flags
+- "maybe": Overall score 50-74 OR missing key information
+- "low_fit": Overall score < 50 OR critical red flags
+
+Return detailed scoring breakdown with justification."""
 
 
 class ExpertExtractionService:
@@ -262,5 +294,98 @@ Provide your recommendation as a JSON object:
         raw_response = response.choices[0].message.content or ""
         parsed = json.loads(raw_response)
         validated = AIRecommendation(**parsed)
+
+        return validated, raw_response, user_prompt
+
+    async def screen_expert_with_documents(
+        self,
+        expert_name: str,
+        employer: str | None,
+        title: str | None,
+        bio: str | None,
+        screener_responses: str | None,
+        project_hypothesis: str,
+        document_chunks: list[dict]
+    ) -> Tuple[AIScreeningResultWithDocs, str, str]:
+        """
+        Generate enhanced AI screening with document context.
+
+        New scoring weights:
+        - Background Fit: 30%
+        - Screener Quality: 30%
+        - Document Relevance: 25%
+        - Red Flags: 15%
+
+        Args:
+            expert_name: Expert's full name
+            employer: Current employer
+            title: Job title
+            bio: Bio or relevance bullets
+            screener_responses: Screener Q&A text
+            project_hypothesis: Project focus/hypothesis
+            document_chunks: List of relevant document chunks with metadata
+
+        Returns:
+            Tuple of (result, raw_response, prompt)
+        """
+        # Format document context
+        doc_context = ""
+        if document_chunks:
+            doc_context = "\n\nDOCUMENT CONTEXT (from ingested data room):\n"
+            for i, chunk in enumerate(document_chunks[:10], 1):  # Limit to top 10 chunks
+                filename = chunk.get("metadata", {}).get("filename", "unknown")
+                text = chunk.get("text", "")[:500]  # Truncate long chunks
+                doc_context += f"\n[Doc {i}: {filename}]\n{text}\n"
+        else:
+            doc_context = "\n\nDOCUMENT CONTEXT: No documents available."
+
+        user_prompt = f"""Evaluate this expert for the following project with document context:
+
+PROJECT HYPOTHESIS/FOCUS:
+{project_hypothesis}
+
+EXPERT PROFILE:
+- Name: {expert_name}
+- Employer: {employer or 'Unknown'}
+- Title: {title or 'Unknown'}
+- Bio/Relevance: {bio or 'Not provided'}
+- Screener Responses: {screener_responses or 'Not provided'}
+{doc_context}
+
+Provide your detailed scoring as a JSON object:
+{{
+  "recommendation": "strong_fit" | "maybe" | "low_fit",
+  "rationale": "1-2 sentence explanation",
+  "confidence": "low" | "medium" | "high",
+  "missingInfo": ["info1", "info2"] | null,
+  "background_fit_score": 0-100,
+  "screener_quality_score": 0-100,
+  "document_relevance_score": 0-100,
+  "red_flags_score": 0-100,
+  "relevant_documents": [
+    {{
+      "filename": "document name",
+      "relevance_score": 0.0-1.0,
+      "matched_topics": ["topic1", "topic2"]
+    }}
+  ] | null,
+  "overall_score": 0-100
+}}
+
+Calculate overall_score as: (background_fit_score * 0.30) + (screener_quality_score * 0.30) + (document_relevance_score * 0.25) + (red_flags_score * 0.15)"""
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": DOCUMENT_SCREENING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+
+        raw_response = response.choices[0].message.content or ""
+        parsed = json.loads(raw_response)
+        validated = AIScreeningResultWithDocs(**parsed)
 
         return validated, raw_response, user_prompt

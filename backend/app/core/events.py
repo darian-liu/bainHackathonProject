@@ -8,6 +8,7 @@ import uuid
 class EventType(str, Enum):
     AGENT_STARTED = "agent_started"
     TOOL_CALLED = "tool_called"
+    TOOL_COMPLETED = "tool_completed"
     LLM_REQUEST = "llm_request"
     LLM_RESPONSE = "llm_response"
     AGENT_COMPLETED = "agent_completed"

@@ -5,13 +5,16 @@
 
 import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Download, Loader2, Search, RefreshCw, ArrowLeft } from 'lucide-react'
-import { useExperts, useUpdateExpert, useProject, expertNetworksApi } from './api'
+import { Download, Loader2, Search, RefreshCw, ArrowLeft, FileText, Sparkles } from 'lucide-react'
+import { useExperts, useUpdateExpert, useProject, expertNetworksApi, useRecommendExpert } from './api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import type { Expert, ExpertStatus } from './types'
 
 export function TrackerPage() {
@@ -24,6 +27,7 @@ export function TrackerPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [isExporting, setIsExporting] = useState(false)
+  const [useDocContext, setUseDocContext] = useState(false)
 
   const experts = data?.experts || []
 
@@ -126,7 +130,7 @@ export function TrackerPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-4">
+      <div className="flex gap-4 items-center">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <Input
@@ -153,6 +157,28 @@ export function TrackerPage() {
             <SelectItem value="conflict">Conflict</SelectItem>
           </SelectContent>
         </Select>
+
+        {/* Document Context Toggle */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-2 border rounded-lg px-3 py-2 bg-white">
+                <FileText className="w-4 h-4 text-gray-500" />
+                <Label htmlFor="doc-context" className="text-sm cursor-pointer">
+                  Doc Context
+                </Label>
+                <Switch
+                  id="doc-context"
+                  checked={useDocContext}
+                  onCheckedChange={setUseDocContext}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>When enabled, AI screening includes document relevance scoring</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Table */}
@@ -191,6 +217,7 @@ export function TrackerPage() {
                   expert={expert}
                   onUpdate={handleUpdate}
                   projectId={projectId!}
+                  useDocContext={useDocContext}
                 />
               ))}
             </TableBody>
@@ -205,13 +232,32 @@ function ExpertRow({
   expert,
   onUpdate,
   projectId,
+  useDocContext,
 }: {
   expert: Expert
   onUpdate: (expertId: string, field: keyof Expert, value: any) => Promise<void>
   projectId: string
+  useDocContext: boolean
 }) {
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(expert.canonicalName)
+  const [isScreening, setIsScreening] = useState(false)
+  const recommendExpert = useRecommendExpert()
+
+  const handleScreenExpert = async () => {
+    setIsScreening(true)
+    try {
+      await recommendExpert.mutateAsync({
+        expertId: expert.id,
+        projectId,
+        includeDocumentContext: useDocContext,
+      })
+    } catch (error) {
+      console.error('Screening failed:', error)
+    } finally {
+      setIsScreening(false)
+    }
+  }
 
   const handleNameSave = async () => {
     if (editedName !== expert.canonicalName) {
@@ -324,22 +370,46 @@ function ExpertRow({
 
       {/* AI Recommendation */}
       <TableCell>
-        {expert.aiRecommendation ? (
-          <Badge
-            variant={
-              expert.aiRecommendation === 'strong_fit'
-                ? 'default'
-                : expert.aiRecommendation === 'maybe'
-                  ? 'secondary'
-                  : 'outline'
-            }
-            title={expert.aiRecommendationRationale || undefined}
+        <div className="flex items-center gap-2">
+          {expert.aiRecommendation ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Badge
+                    variant={
+                      expert.aiRecommendation === 'strong_fit'
+                        ? 'default'
+                        : expert.aiRecommendation === 'maybe'
+                          ? 'secondary'
+                          : 'outline'
+                    }
+                  >
+                    {expert.aiRecommendation}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p>{expert.aiRecommendationRationale || 'No rationale provided'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span className="text-xs text-gray-400">-</span>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 p-0"
+            onClick={handleScreenExpert}
+            disabled={isScreening}
+            title={useDocContext ? 'Screen with document context' : 'Screen expert'}
           >
-            {expert.aiRecommendation}
-          </Badge>
-        ) : (
-          <span className="text-xs text-gray-400">-</span>
-        )}
+            {isScreening ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Sparkles className={`w-3 h-3 ${useDocContext ? 'text-blue-500' : 'text-gray-400'}`} />
+            )}
+          </Button>
+        </div>
       </TableCell>
     </TableRow>
   )

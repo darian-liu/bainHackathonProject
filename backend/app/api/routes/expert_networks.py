@@ -13,6 +13,7 @@ from app.db.queries import projects, experts, emails, dedupe
 from app.services.expert_extraction import ExpertExtractionService
 from app.services.expert_commit import ExpertCommitService
 from app.services.expert_export import export_experts_to_csv
+from app.services.document_context import get_document_context
 from app.schemas.expert_extraction import ExtractedExpert
 
 limiter = Limiter(key_func=get_remote_address)
@@ -44,6 +45,7 @@ class UpdateExpertRequest(BaseModel):
 
 class RecommendExpertRequest(BaseModel):
     projectId: str
+    include_document_context: bool = False
 
 
 # ============== Projects ============== #
@@ -301,7 +303,14 @@ async def get_expert_sources(expert_id: str):
 @router.post("/experts/{expert_id}/recommend")
 @limiter.limit("20/minute")
 async def recommend_expert(request: Request, expert_id: str, req: RecommendExpertRequest):
-    """Generate AI recommendation for expert."""
+    """Generate AI recommendation for expert.
+
+    When include_document_context is True, uses enhanced scoring with document relevance:
+    - Background Fit: 30%
+    - Screener Quality: 30%
+    - Document Relevance: 25%
+    - Red Flags: 15%
+    """
     db = await get_database()
 
     # Get expert
@@ -320,29 +329,82 @@ async def recommend_expert(request: Request, expert_id: str, req: RecommendExper
     screener = sources[0].get("extractedScreener") if sources else None
 
     try:
-        # Generate recommendation
         extraction_service = ExpertExtractionService()
-        result, raw_response, prompt = await extraction_service.recommend_expert(
-            expert_name=expert["canonicalName"],
-            employer=expert.get("canonicalEmployer"),
-            title=expert.get("canonicalTitle"),
-            bio=bio,
-            screener_responses=screener,
-            project_hypothesis=project["hypothesisText"]
-        )
 
-        # Update expert with recommendation
-        await experts.update_expert(
-            db,
-            expert_id,
-            aiRecommendation=result.recommendation,
-            aiRecommendationRationale=result.rationale,
-            aiRecommendationConfidence=result.confidence,
-            aiRecommendationRaw=raw_response,
-            aiRecommendationPrompt=prompt
-        )
+        if req.include_document_context:
+            # Enhanced screening with document context
+            doc_context = get_document_context()
 
-        return result.dict()
+            # Build search query from expert info
+            search_terms = []
+            if expert.get("canonicalEmployer"):
+                search_terms.append(expert["canonicalEmployer"])
+            if expert.get("canonicalTitle"):
+                search_terms.append(expert["canonicalTitle"])
+            if bio:
+                search_terms.append(bio[:200])  # First 200 chars of bio
+
+            search_query = " ".join(search_terms) if search_terms else expert["canonicalName"]
+
+            # Search for relevant document chunks
+            search_results = doc_context.search(search_query, n_results=10)
+            document_chunks = [
+                {
+                    "text": r.text,
+                    "metadata": {
+                        "filename": r.filename,
+                        "file_id": r.file_id,
+                        "chunk_index": r.chunk_index
+                    }
+                }
+                for r in search_results
+            ]
+
+            result, raw_response, prompt = await extraction_service.screen_expert_with_documents(
+                expert_name=expert["canonicalName"],
+                employer=expert.get("canonicalEmployer"),
+                title=expert.get("canonicalTitle"),
+                bio=bio,
+                screener_responses=screener,
+                project_hypothesis=project["hypothesisText"],
+                document_chunks=document_chunks
+            )
+
+            # Update expert with enhanced recommendation
+            await experts.update_expert(
+                db,
+                expert_id,
+                aiRecommendation=result.recommendation,
+                aiRecommendationRationale=result.rationale,
+                aiRecommendationConfidence=result.confidence,
+                aiRecommendationRaw=raw_response,
+                aiRecommendationPrompt=prompt
+            )
+
+            return result.dict()
+        else:
+            # Standard recommendation without document context
+            result, raw_response, prompt = await extraction_service.recommend_expert(
+                expert_name=expert["canonicalName"],
+                employer=expert.get("canonicalEmployer"),
+                title=expert.get("canonicalTitle"),
+                bio=bio,
+                screener_responses=screener,
+                project_hypothesis=project["hypothesisText"]
+            )
+
+            # Update expert with recommendation
+            await experts.update_expert(
+                db,
+                expert_id,
+                aiRecommendation=result.recommendation,
+                aiRecommendationRationale=result.rationale,
+                aiRecommendationConfidence=result.confidence,
+                aiRecommendationRaw=raw_response,
+                aiRecommendationPrompt=prompt
+            )
+
+            return result.dict()
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Recommendation failed: {str(e)}")
