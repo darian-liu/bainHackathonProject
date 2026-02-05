@@ -1,0 +1,141 @@
+Subject: RE: RE: RE: RE: RE: Retail Analytics Expert Request - Project Omega
+From: Sarah Mitchell <sarah.mitchell@alphasights.com>
+Date: January 15, 2024 4:32 PM
+
+Hi Team,
+
+Quick update - Dr. Chen has confirmed availability for Thursday 3-5pm EST.
+
+Best,
+Sarah
+
+---
+
+From: Michael Torres <michael.torres@alphasights.com>
+Sent: January 15, 2024 2:15 PM
+Subject: RE: RE: RE: RE: Retail Analytics Expert Request - Project Omega
+
+Team,
+
+I've heard back from a few more experts. Here's the update:
+
+1. **Dr. Wei Chen** - Update: Conflict cleared! Previously pending, now ready to schedule.
+   - Availability: Thursday Jan 18, 3-5pm EST or Friday Jan 19, 10am-12pm EST
+
+2. **Jennifer Park** - Still pending conflict check
+
+3. **Robert Anderson** - Declined (competitor conflict)
+
+Sarah
+
+---
+
+From: Lisa Wang <lisa.wang@alphasights.com>
+Sent: January 14, 2024 11:30 AM
+Subject: RE: RE: RE: Retail Analytics Expert Request - Project Omega
+
+Hi,
+
+More experts available for your project:
+
+**Jennifer Park**
+Current Role: VP of Analytics at Target
+Previous: Head of Data Science at Macy's (2018-2021)
+Relevant Experience:
+- Led $50M analytics transformation at Target
+- Developed customer segmentation models used across 1,900 stores
+- Expert in retail demand forecasting and inventory optimization
+
+Screener Responses:
+Q: What is your experience with retail POS analytics?
+A: I've spent 8 years working with POS data at scale. At Target, I rebuilt our entire analytics pipeline to process 2B+ transactions/month.
+
+Q: How familiar are you with current retail analytics vendors?
+A: Very familiar - I've evaluated and implemented solutions from Snowflake, Databricks, and several retail-specific vendors.
+
+Conflict Status: Pending
+Availability: Flexible next week
+
+**Marcus Williams**
+Current Role: Director of Business Intelligence at Costco
+Relevant Experience:
+- 12 years in retail analytics
+- Implemented real-time pricing analytics
+- Member insights and basket analysis expert
+
+Screener Responses:
+Q: What is your experience with retail POS analytics?
+A: Extensive - I manage a team that processes all POS data for Costco's 850+ warehouses.
+
+Conflict Status: Cleared
+Availability: Monday Jan 15, 9am-11am PST; Wednesday Jan 17, 2pm-4pm PST
+
+Best,
+Lisa
+
+---
+
+From: Sarah Mitchell <sarah.mitchell@alphasights.com>
+Sent: January 12, 2024 3:45 PM
+Subject: RE: RE: Retail Analytics Expert Request - Project Omega
+
+Team,
+
+Here are initial expert recommendations:
+
+**Dr. Wei Chen**
+Current Role: Chief Data Scientist at Walmart Labs
+Previous: Senior Analyst at Nielsen (2015-2019)
+Relevant Experience:
+- Architected Walmart's customer analytics platform
+- PhD in Statistics from Stanford
+- Published researcher in retail demand forecasting
+
+Screener Responses:
+Q: What is your experience with retail POS analytics?
+A: I lead the team that built Walmart's unified POS analytics system processing 500M+ daily transactions.
+
+Q: How familiar are you with current retail analytics vendors?
+A: Deeply familiar. I've evaluated every major vendor in the space and led several procurement decisions.
+
+Conflict Status: Pending (compliance checking)
+Availability: TBD pending clearance
+
+**Robert Anderson**
+Current Role: VP Engineering at Best Buy
+Previous: Director at Amazon Fresh
+Relevant Experience:
+- Built real-time inventory systems
+- Expert in retail supply chain optimization
+
+Note: Robert may have a competitor conflict - checking with compliance.
+
+Best,
+Sarah
+
+---
+
+From: John Davis <john.davis@client.com>
+Sent: January 11, 2024 10:00 AM
+Subject: RE: Retail Analytics Expert Request - Project Omega
+
+Thanks for sending these over. Looking forward to the profiles.
+
+---
+
+From: Sarah Mitchell <sarah.mitchell@alphasights.com>
+Sent: January 10, 2024 4:00 PM
+Subject: Retail Analytics Expert Request - Project Omega
+
+Hi John,
+
+Thank you for the project brief. We're beginning our search for retail analytics experts with experience in:
+- POS data analytics at scale
+- Customer segmentation and personalization
+- Inventory and demand forecasting
+
+I'll have initial expert recommendations by end of week.
+
+Best regards,
+Sarah Mitchell
+AlphaSights

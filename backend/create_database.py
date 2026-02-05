@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS Project (
     name TEXT NOT NULL,
     hypothesisText TEXT NOT NULL,
     networks TEXT,
+    screenerConfigJson TEXT,
     createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL
 );
@@ -55,6 +56,13 @@ CREATE TABLE IF NOT EXISTS Expert (
     aiRecommendationConfidence TEXT,
     aiRecommendationRaw TEXT,
     aiRecommendationPrompt TEXT,
+    aiScreeningGrade TEXT,
+    aiScreeningScore INTEGER,
+    aiScreeningRationale TEXT,
+    aiScreeningConfidence TEXT,
+    aiScreeningMissingInfo TEXT,
+    aiScreeningRaw TEXT,
+    aiScreeningPrompt TEXT,
     createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL,
     FOREIGN KEY (projectId) REFERENCES Project(id) ON DELETE CASCADE
@@ -146,6 +154,39 @@ CREATE TABLE IF NOT EXISTS PendingUpdate (
 
 CREATE INDEX IF NOT EXISTS idx_pendingupdate_expertId ON PendingUpdate(expertId);
 CREATE INDEX IF NOT EXISTS idx_pendingupdate_status ON PendingUpdate(status);
+
+CREATE TABLE IF NOT EXISTS IngestionLog (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    emailId TEXT NOT NULL,
+    status TEXT DEFAULT 'completed' NOT NULL,
+    summaryJson TEXT NOT NULL,
+    snapshotJson TEXT,
+    createdAt TEXT NOT NULL,
+    undoneAt TEXT,
+    FOREIGN KEY (projectId) REFERENCES Project(id) ON DELETE CASCADE,
+    FOREIGN KEY (emailId) REFERENCES Email(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingestionlog_projectId ON IngestionLog(projectId);
+CREATE INDEX IF NOT EXISTS idx_ingestionlog_emailId ON IngestionLog(emailId);
+
+CREATE TABLE IF NOT EXISTS IngestionLogEntry (
+    id TEXT PRIMARY KEY,
+    ingestionLogId TEXT NOT NULL,
+    action TEXT NOT NULL,
+    expertId TEXT,
+    expertName TEXT,
+    mergedFromExpertId TEXT,
+    fieldsChanged TEXT,
+    previousValuesJson TEXT,
+    newValuesJson TEXT,
+    createdAt TEXT NOT NULL,
+    FOREIGN KEY (ingestionLogId) REFERENCES IngestionLog(id) ON DELETE CASCADE,
+    FOREIGN KEY (expertId) REFERENCES Expert(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingestionlogentry_ingestionLogId ON IngestionLogEntry(ingestionLogId);
 """
 
 

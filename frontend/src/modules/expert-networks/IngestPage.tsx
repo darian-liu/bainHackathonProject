@@ -1,84 +1,101 @@
 /**
  * Ingest Page - Extract experts from emails
+ * Uses auto-ingest for streamlined workflow
  */
 
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
-import { useExtractEmail, useCommitExperts } from './api'
+import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Undo2, Sparkles } from 'lucide-react'
+import { useAutoIngest, useUndoIngestion, useProject, useScreenAllExperts } from './api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
-import type { EmailExtractionResult, ExtractedExpert } from './types'
+import type { AutoIngestResult } from './types'
 
 export function IngestPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
-  const extractEmail = useExtractEmail()
-  const commitExperts = useCommitExperts()
+  const autoIngest = useAutoIngest()
+  const undoIngestion = useUndoIngestion()
+  const { data: projectData } = useProject(projectId!)
+  const screenAllExperts = useScreenAllExperts()
 
   const [emailText, setEmailText] = useState('')
   const [network, setNetwork] = useState<string>('')
-  const [extractionResult, setExtractionResult] = useState<EmailExtractionResult | null>(null)
-  const [selectedIndices, setSelectedIndices] = useState<number[]>([])
+  const [result, setResult] = useState<AutoIngestResult | null>(null)
+  const [isAutoScreening, setIsAutoScreening] = useState(false)
+  const [screeningResult, setScreeningResult] = useState<{
+    screened: number
+    failed: number
+  } | null>(null)
 
-  const handleExtract = async () => {
+  const autoScreenEnabled = projectData?.screenerConfig?.autoScreen || false
+
+  const handleIngest = async () => {
     if (!projectId || !emailText.trim()) return
 
     try {
-      const result = await extractEmail.mutateAsync({
+      const ingestResult = await autoIngest.mutateAsync({
         projectId,
         emailText,
         network: network || undefined,
       })
-      setExtractionResult(result)
-      // Select all experts by default
-      setSelectedIndices(result.result.experts.map((_, idx) => idx))
+      setResult(ingestResult)
+      
+      // Auto-screen if enabled and there were added/updated experts
+      if (autoScreenEnabled && (ingestResult.summary.addedCount > 0 || ingestResult.summary.updatedCount > 0)) {
+        setIsAutoScreening(true)
+        try {
+          const screenResult = await screenAllExperts.mutateAsync({ projectId })
+          setScreeningResult({ screened: screenResult.screened, failed: screenResult.failed })
+        } catch (error) {
+          console.error('Auto-screening failed:', error)
+        } finally {
+          setIsAutoScreening(false)
+        }
+      }
     } catch (error) {
-      console.error('Extraction failed:', error)
+      console.error('Ingestion failed:', error)
     }
   }
 
-  const handleCommit = async () => {
-    if (!projectId || !extractionResult) return
+  const handleUndo = async () => {
+    if (!projectId || !result) return
 
     try {
-      await commitExperts.mutateAsync({
+      await undoIngestion.mutateAsync({
         projectId,
-        emailId: extractionResult.emailId,
-        selectedIndices,
+        logId: result.ingestionLogId,
       })
-      navigate(`/expert-networks/${projectId}/tracker`)
+      setResult(null)
+      setEmailText('')
     } catch (error) {
-      console.error('Commit failed:', error)
+      console.error('Undo failed:', error)
     }
-  }
-
-  const toggleExpert = (index: number) => {
-    setSelectedIndices((prev) =>
-      prev.includes(index)
-        ? prev.filter((i) => i !== index)
-        : [...prev, index]
-    )
   }
 
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Ingest Email</h1>
-        <p className="text-gray-600">Extract expert profiles from email</p>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Sparkles className="w-6 h-6 text-purple-600" />
+          AI Extract & Screen
+        </h1>
+        <p className="text-gray-600">
+          Paste expert network emails. AI extracts experts, validates data, and runs smart screening.
+        </p>
       </div>
 
-      {!extractionResult ? (
+      {!result ? (
         <Card>
           <CardHeader>
             <CardTitle>Paste Email Content</CardTitle>
             <CardDescription>
-              Paste the email from AlphaSights, Guidepoint, GLG, etc.
+              Paste emails from AlphaSights, Guidepoint, GLG, or other expert networks.
+              AI will extract expert profiles, validate data, deduplicate, and run smart screening.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -111,134 +128,266 @@ export function IngestPage() {
             </div>
 
             <Button
-              onClick={handleExtract}
-              disabled={!emailText.trim() || extractEmail.isPending}
+              onClick={handleIngest}
+              disabled={!emailText.trim() || autoIngest.isPending}
               className="w-full"
             >
-              {extractEmail.isPending ? (
+              {autoIngest.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Extracting...
+                  AI Processing...
                 </>
               ) : (
-                'Extract Experts'
+                <>
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  AI Extract & Screen
+                </>
               )}
             </Button>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Extraction Results</CardTitle>
-                  <CardDescription>
-                    {extractionResult.result.experts.length} experts found
-                    {extractionResult.result.inferredNetwork && (
-                      <> from {extractionResult.result.inferredNetwork}</>
-                    )}
-                  </CardDescription>
+          {/* No-Op Summary (duplicate/repeated content) */}
+          {result.summary.isNoOp ? (
+            <Card className="border-gray-200 bg-gray-50">
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-gray-500" />
+                  <CardTitle className="text-gray-700">No Changes Detected</CardTitle>
                 </div>
-                <Button variant="outline" onClick={() => setExtractionResult(null)}>
-                  Start Over
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-3">
-                {extractionResult.result.experts.map((expert, idx) => (
-                  <ExpertCard
-                    key={idx}
-                    expert={expert}
-                    index={idx}
-                    isSelected={selectedIndices.includes(idx)}
-                    onToggle={toggleExpert}
-                  />
-                ))}
-              </div>
-
-              <Button
-                onClick={handleCommit}
-                disabled={selectedIndices.length === 0 || commitExperts.isPending}
-                className="w-full"
-              >
-                {commitExperts.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Committing...
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Commit {selectedIndices.length} Experts to Tracker
-                  </>
+                <CardDescription className="text-gray-600">
+                  {result.summary.extractedCount} expert(s) found, but all match existing records with no new information.
+                  {result.summary.network && ` (${result.summary.network})`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Notes explaining why it's a no-op */}
+                {result.summary.extractionNotes && result.summary.extractionNotes.length > 0 && (
+                  <div className="space-y-2 text-sm text-gray-600 bg-white p-3 rounded-lg border">
+                    <ul className="list-disc list-inside space-y-1">
+                      {result.summary.extractionNotes.map((note, idx) => (
+                        <li key={idx}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
-              </Button>
-            </CardContent>
-          </Card>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-2">
+                  <Button onClick={() => navigate(`/expert-networks/${projectId}/tracker`)}>
+                    View Tracker
+                    <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setResult(null)
+                      setEmailText('')
+                    }}
+                  >
+                    Ingest Another
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            /* Success Summary with actual changes */
+            <Card className="border-green-200 bg-green-50">
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-green-600" />
+                  <CardTitle className="text-green-900">Ingestion Complete</CardTitle>
+                </div>
+                <CardDescription className="text-green-700">
+                  {result.summary.extractedCount} experts extracted from email
+                  {result.summary.network && ` (${result.summary.network})`}
+                </CardDescription>
+              </CardHeader>
+
+              {/* Auto-Screening Status */}
+              {(isAutoScreening || screeningResult) && (
+                <div className={`mx-6 mb-4 p-3 rounded-lg flex items-center gap-3 ${isAutoScreening ? 'bg-purple-100 border border-purple-200' : 'bg-purple-50 border border-purple-100'}`}>
+                  {isAutoScreening ? (
+                    <>
+                      <Loader2 className="w-5 h-5 text-purple-600 animate-spin" />
+                      <div>
+                        <p className="font-medium text-purple-800">Running AI Screening...</p>
+                        <p className="text-sm text-purple-600">Evaluating experts against project needs</p>
+                      </div>
+                    </>
+                  ) : screeningResult && (
+                    <>
+                      <Sparkles className="w-5 h-5 text-purple-600" />
+                      <div>
+                        <p className="font-medium text-purple-800">AI Screening Complete</p>
+                        <p className="text-sm text-purple-600">
+                          {screeningResult.screened} expert(s) screened
+                          {screeningResult.failed > 0 && `, ${screeningResult.failed} failed`}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              <CardContent className="space-y-4">
+                {/* Change Summary */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <SummaryCard
+                    label="Added"
+                    count={result.summary.addedCount}
+                    variant="success"
+                  />
+                  <SummaryCard
+                    label="Updated"
+                    count={result.summary.updatedCount}
+                    variant="info"
+                  />
+                  <SummaryCard
+                    label="Merged"
+                    count={result.summary.mergedCount}
+                    variant="info"
+                  />
+                  <SummaryCard
+                    label="Needs Review"
+                    count={result.summary.needsReviewCount}
+                    variant={result.summary.needsReviewCount > 0 ? 'warning' : 'default'}
+                  />
+                </div>
+
+                {/* Details */}
+                {result.changes.added.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="font-medium text-sm text-gray-700">New Experts Added:</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {result.changes.added.map((change, idx) => (
+                        <Badge key={idx} variant="secondary">
+                          {change.expertName}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {result.changes.updated.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="font-medium text-sm text-gray-700">Experts Updated:</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {result.changes.updated.map((change, idx) => (
+                        <Badge key={idx} variant="outline">
+                          {change.expertName}
+                          {change.fieldsUpdated && change.fieldsUpdated.length > 0 && (
+                            <span className="ml-1 text-gray-500">
+                              ({change.fieldsUpdated.join(', ')})
+                            </span>
+                          )}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {result.changes.merged.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="font-medium text-sm text-gray-700">Duplicates Merged:</h4>
+                    <ul className="text-sm text-gray-600 space-y-1">
+                      {result.changes.merged.map((change, idx) => (
+                        <li key={idx}>
+                          Auto-merged duplicate (score: {Math.round(change.score! * 100)}%)
+                        </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {result.changes.needsReview.length > 0 && (
+                <div className="space-y-2 bg-amber-50 p-3 rounded-lg border border-amber-200">
+                  <h4 className="font-medium text-sm text-amber-800 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    Items Needing Review:
+                  </h4>
+                  <ul className="text-sm text-amber-700 space-y-1">
+                    {result.changes.needsReview.map((change, idx) => (
+                      <li key={idx}>{change.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {result.summary.extractionNotes && result.summary.extractionNotes.length > 0 && (
+                <div className="space-y-2 text-sm text-gray-600">
+                  <h4 className="font-medium">Notes:</h4>
+                  <ul className="list-disc list-inside">
+                    {result.summary.extractionNotes.map((note, idx) => (
+                      <li key={idx}>{note}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    variant="outline"
+                    onClick={handleUndo}
+                    disabled={undoIngestion.isPending}
+                  >
+                    {undoIngestion.isPending ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Undo2 className="w-4 h-4 mr-2" />
+                    )}
+                    Undo Ingestion
+                  </Button>
+                  <Button onClick={() => navigate(`/expert-networks/${projectId}/tracker`)}>
+                    View Tracker
+                    <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setResult(null)
+                      setEmailText('')
+                    }}
+                  >
+                    Ingest Another
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-function ExpertCard({
-  expert,
-  index,
-  isSelected,
-  onToggle,
+function SummaryCard({
+  label,
+  count,
+  variant = 'default',
 }: {
-  expert: ExtractedExpert
-  index: number
-  isSelected: boolean
-  onToggle: (index: number) => void
+  label: string
+  count: number
+  variant?: 'default' | 'success' | 'info' | 'warning'
 }) {
+  const bgColors = {
+    default: 'bg-gray-100',
+    success: 'bg-green-100',
+    info: 'bg-blue-100',
+    warning: 'bg-amber-100',
+  }
+  const textColors = {
+    default: 'text-gray-900',
+    success: 'text-green-900',
+    info: 'text-blue-900',
+    warning: 'text-amber-900',
+  }
+
   return (
-    <div className="border rounded-lg p-4 space-y-2">
-      <div className="flex items-start gap-3">
-        <Checkbox checked={isSelected} onCheckedChange={() => onToggle(index)} />
-        <div className="flex-1 space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold">{expert.fullName}</h3>
-            <Badge variant={expert.overallConfidence === 'high' ? 'default' : 'secondary'}>
-              {expert.overallConfidence} confidence
-            </Badge>
-          </div>
-
-          {expert.employer && (
-            <p className="text-sm text-gray-600">
-              {expert.title ? `${expert.title} at ` : ''}
-              {expert.employer}
-            </p>
-          )}
-
-          {expert.relevanceBullets && expert.relevanceBullets.length > 0 && (
-            <ul className="text-sm text-gray-700 list-disc list-inside">
-              {expert.relevanceBullets.slice(0, 3).map((bullet, i) => (
-                <li key={i}>{bullet}</li>
-              ))}
-            </ul>
-          )}
-
-          {expert.statusCue && (
-            <div className="flex items-center gap-2 text-sm">
-              {expert.statusCue === 'available' ? (
-                <CheckCircle2 className="w-4 h-4 text-green-600" />
-              ) : expert.statusCue === 'declined' ? (
-                <AlertCircle className="w-4 h-4 text-red-600" />
-              ) : null}
-              <span className="text-gray-600">Status: {expert.statusCue}</span>
-            </div>
-          )}
-
-          {expert.conflictStatus && (
-            <Badge variant={expert.conflictStatus === 'cleared' ? 'default' : 'destructive'}>
-              Conflict: {expert.conflictStatus}
-            </Badge>
-          )}
-        </div>
-      </div>
+    <div className={`${bgColors[variant]} rounded-lg p-3 text-center`}>
+      <div className={`text-2xl font-bold ${textColors[variant]}`}>{count}</div>
+      <div className={`text-sm ${textColors[variant]} opacity-80`}>{label}</div>
     </div>
   )
 }

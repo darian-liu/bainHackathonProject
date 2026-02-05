@@ -1,0 +1,47 @@
+Subject: Fintech Expert Profiles - Payment Processing Due Diligence
+From: David Chen <david.chen@glgroup.com>
+Date: March 1, 2024 11:00 AM
+
+Hi Team,
+
+Per your request, here are fintech/payments experts from our network:
+
+**Michael Torres**
+Current: SVP, Head of Product at Stripe
+Previous: Director of Payments at Square (2017-2021)
+Background:
+- 12 years in payments technology
+- Led Square's international expansion
+- Expert in payment processing infrastructure and fraud detection
+
+Screener Responses (GLG Screener):
+Q: What payment rails do you have direct experience with?
+A: I've worked extensively with card networks (Visa/Mastercard), ACH, wire transfers, and real-time payments. At Stripe, I led our expansion into local payment methods across 15+ countries.
+
+Q: What's your perspective on the buy-now-pay-later (BNPL) market?
+A: BNPL is consolidating. The unit economics are challenging for pure-play providers, which is why you see the major players being acquired or pivoting. I expect the feature to become table stakes for traditional payments companies.
+
+Conflict Status: Cleared
+Availability: Wednesday Mar 6, 2-4pm PST
+
+**Lisa Park**
+Current: VP of Engineering at PayPal
+Previous: Principal Engineer at Visa
+Background:
+- Built PayPal's real-time fraud detection system
+- 15 years in payment technology
+- Expert in PCI compliance and security architecture
+
+Screener Responses (GLG Screener):
+Q: What payment rails do you have direct experience with?
+A: Deep experience with card networks from my Visa days. At PayPal, I've expanded into alternative payment methods and crypto settlements.
+
+Q: What's your perspective on the buy-now-pay-later (BNPL) market?
+A: From an engineering perspective, BNPL integration is straightforward. The challenge is credit risk modeling - something PayPal has an advantage in given our data assets.
+
+Conflict Status: Pending
+Availability: TBD
+
+Best regards,
+David Chen
+GLG | Gerson Lehrman Group

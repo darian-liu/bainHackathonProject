@@ -4,12 +4,12 @@ import json
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.db.database import get_database
-from app.db.queries import projects, experts, emails, dedupe
+from app.db.queries import projects, experts, emails, dedupe, ingestion_log
 from app.services.expert_extraction import ExpertExtractionService
 from app.services.expert_commit import ExpertCommitService
 from app.services.expert_export import export_experts_to_csv
@@ -22,10 +22,25 @@ router = APIRouter(prefix="/expert-networks", tags=["expert-networks"])
 
 
 # Request/Response Models
+class ScreenerQuestion(BaseModel):
+    id: str
+    order: int
+    text: str
+    idealAnswer: Optional[str] = None
+    rubricNotes: Optional[str] = None
+    redFlags: Optional[str] = None
+
+
+class ScreenerConfig(BaseModel):
+    questions: List[ScreenerQuestion] = []
+    autoScreen: bool = False  # If True, automatically screen experts after ingestion
+
+
 class CreateProjectRequest(BaseModel):
     name: str
     hypothesisText: str
     networks: Optional[List[str]] = None
+    screenerConfig: Optional[ScreenerConfig] = None
 
 
 class ExtractEmailRequest(BaseModel):
@@ -46,6 +61,20 @@ class RecommendExpertRequest(BaseModel):
     projectId: str
 
 
+class UpdateScreenerConfigRequest(BaseModel):
+    screenerConfig: ScreenerConfig
+
+
+class AutoIngestRequest(BaseModel):
+    emailText: str
+    network: Optional[str] = None
+    autoMergeThreshold: float = 0.85  # Score above which to auto-merge
+
+
+class ScreenExpertRequest(BaseModel):
+    projectId: str
+
+
 # ============== Projects ============== #
 
 @router.get("/projects")
@@ -60,11 +89,13 @@ async def list_projects():
 async def create_project(req: CreateProjectRequest):
     """Create new project."""
     db = await get_database()
+    screener_config_dict = req.screenerConfig.model_dump() if req.screenerConfig else None
     project = await projects.create_project(
         db,
         name=req.name,
         hypothesis_text=req.hypothesisText,
-        networks=req.networks
+        networks=req.networks,
+        screener_config=screener_config_dict
     )
     return project
 
@@ -116,6 +147,30 @@ async def delete_project(project_id: str):
     return {"success": True}
 
 
+@router.put("/projects/{project_id}/screener-config")
+async def update_screener_config(project_id: str, req: UpdateScreenerConfigRequest):
+    """Update project screener configuration."""
+    db = await get_database()
+    
+    # Verify project exists
+    project = await projects.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    success = await projects.update_project(
+        db,
+        project_id,
+        screener_config=req.screenerConfig.model_dump()
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update screener config")
+    
+    # Return updated project
+    updated_project = await projects.get_project(db, project_id)
+    return updated_project
+
+
 # ============== Email Extraction & Commit ============== #
 
 @router.post("/projects/{project_id}/extract")
@@ -150,14 +205,14 @@ async def extract_email(request: Request, project_id: str, req: ExtractEmailRequ
         await emails.update_email_extraction(
             db,
             email["id"],
-            extraction_result_json=result.json(),
+            extraction_result_json=result.model_dump_json(),
             extraction_prompt=prompt,
             extraction_response=raw_response
         )
 
         return {
             "emailId": email["id"],
-            "result": result.dict(),
+            "result": result.model_dump(),
             "extractionNotes": result.extractionNotes
         }
 
@@ -214,6 +269,115 @@ async def commit_experts(project_id: str, req: CommitExpertsRequest):
         raise HTTPException(status_code=500, detail=f"Commit failed: {str(e)}")
 
 
+@router.post("/projects/{project_id}/auto-ingest")
+@limiter.limit("10/minute")
+async def auto_ingest(request: Request, project_id: str, req: AutoIngestRequest):
+    """
+    Auto-ingest: Extract, commit, and merge in one step.
+    
+    This is the preferred flow:
+    1. Extract experts from email
+    2. Auto-commit all extracted experts
+    3. Auto-merge duplicates above threshold
+    4. Return change summary with undo capability
+    """
+    from app.services.auto_ingestion import AutoIngestionService
+    
+    db = await get_database()
+    
+    # Verify project exists
+    project = await projects.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        service = AutoIngestionService()
+        result = await service.auto_ingest(
+            db=db,
+            project_id=project_id,
+            email_text=req.emailText,
+            network=req.network,
+            project_hypothesis=project["hypothesisText"],
+            screener_config=project.get("screenerConfig"),
+            auto_merge_threshold=req.autoMergeThreshold
+        )
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        print(f"Auto-ingest error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Auto-ingest failed: {str(e)}")
+
+
+@router.post("/projects/{project_id}/ingestion-logs/{log_id}/undo")
+async def undo_ingestion(project_id: str, log_id: str):
+    """Undo a previous ingestion operation."""
+    from app.services.auto_ingestion import AutoIngestionService
+    
+    db = await get_database()
+    
+    # Get the log
+    log = await ingestion_log.get_ingestion_log(db, log_id)
+    if not log or log["projectId"] != project_id:
+        raise HTTPException(status_code=404, detail="Ingestion log not found")
+    
+    if log["status"] == "undone":
+        raise HTTPException(status_code=400, detail="Ingestion already undone")
+    
+    try:
+        service = AutoIngestionService()
+        result = await service.undo_ingestion(db, log)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Undo failed: {str(e)}")
+
+
+@router.post("/projects/{project_id}/ingestion-logs/{log_id}/redo")
+async def redo_ingestion(project_id: str, log_id: str):
+    """Redo a previously undone ingestion operation."""
+    from app.services.auto_ingestion import AutoIngestionService
+    
+    db = await get_database()
+    
+    # Get the log
+    log = await ingestion_log.get_ingestion_log(db, log_id)
+    if not log or log["projectId"] != project_id:
+        raise HTTPException(status_code=404, detail="Ingestion log not found")
+    
+    if log["status"] != "undone":
+        raise HTTPException(status_code=400, detail="Ingestion has not been undone")
+    
+    try:
+        service = AutoIngestionService()
+        result = await service.redo_ingestion(db, log)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Redo failed: {str(e)}")
+
+
+@router.get("/projects/{project_id}/ingestion-logs")
+async def list_ingestion_logs_route(project_id: str, limit: int = 10):
+    """Get recent ingestion logs for a project."""
+    db = await get_database()
+    logs = await ingestion_log.list_ingestion_logs(db, project_id, limit)
+    return {"logs": logs}
+
+
+@router.get("/projects/{project_id}/ingestion-logs/latest")
+async def get_latest_ingestion_log_route(project_id: str):
+    """Get the most recent ingestion log."""
+    db = await get_database()
+    log = await ingestion_log.get_latest_ingestion_log(db, project_id)
+    if not log:
+        return {"log": None}
+    
+    # Get full log with entries
+    full_log = await ingestion_log.get_ingestion_log(db, log["id"])
+    return {"log": full_log}
+
+
 # ============== Experts ============== #
 
 @router.get("/projects/{project_id}/experts")
@@ -229,6 +393,23 @@ async def get_expert(expert_id: str):
     """Get expert details."""
     db = await get_database()
     expert = await experts.get_expert(db, expert_id)
+
+    if not expert:
+        raise HTTPException(status_code=404, detail="Expert not found")
+
+    return expert
+
+
+@router.get("/experts/{expert_id}/details")
+async def get_expert_details(expert_id: str):
+    """
+    Get expert with full details including sources, provenance, and user edits.
+    
+    This endpoint returns all information needed for the expert detail panel,
+    including which email each field value came from.
+    """
+    db = await get_database()
+    expert = await experts.get_expert_with_full_details(db, expert_id)
 
     if not expert:
         raise HTTPException(status_code=404, detail="Expert not found")
@@ -342,10 +523,184 @@ async def recommend_expert(request: Request, expert_id: str, req: RecommendExper
             aiRecommendationPrompt=prompt
         )
 
-        return result.dict()
+        return result.model_dump()
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Recommendation failed: {str(e)}")
+
+
+@router.post("/experts/{expert_id}/screen")
+@limiter.limit("20/minute")
+async def screen_expert(request: Request, expert_id: str, req: ScreenExpertRequest):
+    """
+    Generate Smart Fit Assessment for expert.
+    
+    Evaluates expert against project needs using all available information:
+    - Expert background (employer, title, bio)
+    - Project hypothesis
+    - Screener rubric and responses (if available)
+    """
+    db = await get_database()
+    
+    # Get expert
+    expert = await experts.get_expert(db, expert_id)
+    if not expert:
+        raise HTTPException(status_code=404, detail="Expert not found")
+    
+    # Get project with screener config and hypothesis
+    project = await projects.get_project(db, req.projectId)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    screener_config = project.get("screenerConfig")
+    # Note: screener_config is now optional - we can assess based on background alone
+    
+    # Get expert sources (for bio and screener responses)
+    sources = await experts.get_expert_sources(db, expert_id)
+    screener_responses = sources[0].get("extractedScreener") if sources else None
+    expert_bio = sources[0].get("extractedBio") if sources else None
+    
+    try:
+        # Generate Smart Fit Assessment
+        extraction_service = ExpertExtractionService()
+        result, raw_response, prompt = await extraction_service.screen_expert(
+            expert_name=expert["canonicalName"],
+            expert_employer=expert.get("canonicalEmployer"),
+            expert_title=expert.get("canonicalTitle"),
+            expert_bio=expert_bio,
+            screener_responses=screener_responses,
+            screener_config=screener_config,
+            project_hypothesis=project["hypothesisText"]
+        )
+        
+        # Update expert with screening result
+        await experts.update_expert(
+            db,
+            expert_id,
+            aiScreeningGrade=result.grade,
+            aiScreeningScore=result.score,
+            aiScreeningRationale=result.rationale,
+            aiScreeningConfidence=result.confidence,
+            aiScreeningMissingInfo=json.dumps(result.missingInfo) if result.missingInfo else None,
+            aiScreeningRaw=raw_response,
+            aiScreeningPrompt=prompt
+        )
+        
+        return result.model_dump()
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Screening failed: {str(e)}")
+
+
+class ScreenAllResponse(BaseModel):
+    screened: int
+    failed: int
+    skipped: int
+    results: List[dict]
+
+
+@router.post("/projects/{project_id}/screen-all")
+@limiter.limit("5/minute")
+async def screen_all_experts(request: Request, project_id: str, force: bool = False):
+    """
+    Screen all experts in a project using Smart Fit Assessment.
+    
+    Args:
+        project_id: Project ID
+        force: If True, re-screen experts even if they already have screening results
+    
+    Returns:
+        Summary of screening results
+    """
+    db = await get_database()
+    
+    # Get project
+    project = await projects.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    screener_config = project.get("screenerConfig")
+    project_hypothesis = project["hypothesisText"]
+    
+    # Get all experts in project
+    all_experts = await experts.list_experts(db, project_id)
+    
+    # Filter to unscreened experts (unless force=True)
+    if force:
+        experts_to_screen = all_experts
+    else:
+        experts_to_screen = [e for e in all_experts if not e.get("aiScreeningGrade")]
+    
+    if not experts_to_screen:
+        return ScreenAllResponse(
+            screened=0, 
+            failed=0, 
+            skipped=len(all_experts),
+            results=[]
+        )
+    
+    extraction_service = ExpertExtractionService()
+    results = []
+    screened = 0
+    failed = 0
+    
+    for expert in experts_to_screen:
+        try:
+            # Get expert sources for bio and screener responses
+            sources = await experts.get_expert_sources(db, expert["id"])
+            screener_responses = sources[0].get("extractedScreener") if sources else None
+            expert_bio = sources[0].get("extractedBio") if sources else None
+            
+            # Run screening
+            result, raw_response, prompt = await extraction_service.screen_expert(
+                expert_name=expert["canonicalName"],
+                expert_employer=expert.get("canonicalEmployer"),
+                expert_title=expert.get("canonicalTitle"),
+                expert_bio=expert_bio,
+                screener_responses=screener_responses,
+                screener_config=screener_config,
+                project_hypothesis=project_hypothesis
+            )
+            
+            # Update expert with screening result
+            await experts.update_expert(
+                db,
+                expert["id"],
+                aiScreeningGrade=result.grade,
+                aiScreeningScore=result.score,
+                aiScreeningRationale=result.rationale,
+                aiScreeningConfidence=result.confidence,
+                aiScreeningMissingInfo=json.dumps(result.missingInfo) if result.missingInfo else None,
+                aiScreeningRaw=raw_response,
+                aiScreeningPrompt=prompt
+            )
+            
+            results.append({
+                "expertId": expert["id"],
+                "expertName": expert["canonicalName"],
+                "grade": result.grade,
+                "score": result.score,
+                "success": True
+            })
+            screened += 1
+            
+        except Exception as e:
+            results.append({
+                "expertId": expert["id"],
+                "expertName": expert["canonicalName"],
+                "success": False,
+                "error": str(e)
+            })
+            failed += 1
+    
+    skipped = len(all_experts) - len(experts_to_screen)
+    
+    return ScreenAllResponse(
+        screened=screened,
+        failed=failed,
+        skipped=skipped,
+        results=results
+    )
 
 
 # ============== Deduplication ============== #

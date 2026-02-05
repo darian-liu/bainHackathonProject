@@ -9,6 +9,10 @@ import type {
   EmailExtractionResult,
   DedupeCandidate,
   ExpertSource,
+  ScreenerConfig,
+  AutoIngestResult,
+  IngestionLog,
+  ExpertWithDetails,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -27,6 +31,7 @@ export const expertNetworksApi = {
     name: string
     hypothesisText: string
     networks?: string[]
+    screenerConfig?: ScreenerConfig
   }): Promise<Project> => {
     const res = await fetch(`${API_BASE}/api/expert-networks/projects`, {
       method: 'POST',
@@ -42,6 +47,22 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/projects/${projectId}`
     )
     if (!res.ok) throw new Error('Failed to fetch project')
+    return res.json()
+  },
+
+  updateScreenerConfig: async (
+    projectId: string,
+    screenerConfig: ScreenerConfig
+  ): Promise<Project> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/screener-config`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ screenerConfig }),
+      }
+    )
+    if (!res.ok) throw new Error('Failed to update screener config')
     return res.json()
   },
 
@@ -66,7 +87,7 @@ export const expertNetworksApi = {
     return res.json()
   },
 
-  // Commit experts
+  // Commit experts (legacy manual flow)
   commitExperts: async (
     projectId: string,
     emailId: string,
@@ -83,6 +104,127 @@ export const expertNetworksApi = {
     if (!res.ok) {
       const error = await res.json()
       throw new Error(error.detail || 'Commit failed')
+    }
+    return res.json()
+  },
+
+  // Auto-ingest (new streamlined flow)
+  autoIngest: async (
+    projectId: string,
+    emailText: string,
+    network?: string,
+    autoMergeThreshold: number = 0.85
+  ): Promise<AutoIngestResult> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/auto-ingest`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailText, network, autoMergeThreshold }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Auto-ingest failed')
+    }
+    return res.json()
+  },
+
+  // Undo ingestion
+  undoIngestion: async (
+    projectId: string,
+    logId: string
+  ): Promise<{ success: boolean; undone: unknown; message: string }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/${logId}/undo`,
+      { method: 'POST' }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Undo failed')
+    }
+    return res.json()
+  },
+
+  // Redo ingestion
+  redoIngestion: async (
+    projectId: string,
+    logId: string
+  ): Promise<{ success: boolean; redone: unknown; message: string }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/${logId}/redo`,
+      { method: 'POST' }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Redo failed')
+    }
+    return res.json()
+  },
+
+  // Get latest ingestion log
+  getLatestIngestionLog: async (
+    projectId: string
+  ): Promise<{ log: IngestionLog | null }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/ingestion-logs/latest`
+    )
+    if (!res.ok) throw new Error('Failed to fetch ingestion log')
+    return res.json()
+  },
+
+  // Screen expert
+  screenExpert: async (
+    expertId: string,
+    projectId: string
+  ): Promise<{
+    grade: string
+    score: number
+    rationale: string
+    confidence: string
+    missingInfo: string[] | null
+    suggestedQuestions: string[] | null
+  }> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/experts/${expertId}/screen`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Screening failed')
+    }
+    return res.json()
+  },
+
+  // Screen all experts in project
+  screenAllExperts: async (
+    projectId: string,
+    force: boolean = false
+  ): Promise<{
+    screened: number
+    failed: number
+    skipped: number
+    results: Array<{
+      expertId: string
+      expertName: string
+      grade?: string
+      score?: number
+      success: boolean
+      error?: string
+    }>
+  }> => {
+    const url = new URL(
+      `${API_BASE}/api/expert-networks/projects/${projectId}/screen-all`
+    )
+    if (force) url.searchParams.set('force', 'true')
+    const res = await fetch(url.toString(), { method: 'POST' })
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Batch screening failed')
     }
     return res.json()
   },
@@ -122,6 +264,14 @@ export const expertNetworksApi = {
       `${API_BASE}/api/expert-networks/experts/${expertId}/sources`
     )
     if (!res.ok) throw new Error('Failed to fetch expert sources')
+    return res.json()
+  },
+
+  getExpertDetails: async (expertId: string): Promise<ExpertWithDetails> => {
+    const res = await fetch(
+      `${API_BASE}/api/expert-networks/experts/${expertId}/details`
+    )
+    if (!res.ok) throw new Error('Failed to fetch expert details')
     return res.json()
   },
 
@@ -258,6 +408,114 @@ export function useCommitExperts() {
   })
 }
 
+export function useAutoIngest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      emailText,
+      network,
+      autoMergeThreshold,
+    }: {
+      projectId: string
+      emailText: string
+      network?: string
+      autoMergeThreshold?: number
+    }) => expertNetworksApi.autoIngest(projectId, emailText, network, autoMergeThreshold),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['experts', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['duplicates', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['ingestion-log', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useUndoIngestion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, logId }: { projectId: string; logId: string }) =>
+      expertNetworksApi.undoIngestion(projectId, logId),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['experts', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['ingestion-log', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useRedoIngestion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, logId }: { projectId: string; logId: string }) =>
+      expertNetworksApi.redoIngestion(projectId, logId),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['experts', variables.projectId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['ingestion-log', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useLatestIngestionLog(projectId: string) {
+  return useQuery({
+    queryKey: ['ingestion-log', projectId],
+    queryFn: () => expertNetworksApi.getLatestIngestionLog(projectId),
+    enabled: !!projectId,
+  })
+}
+
+export function useUpdateScreenerConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      screenerConfig,
+    }: {
+      projectId: string
+      screenerConfig: import('./types').ScreenerConfig
+    }) => expertNetworksApi.updateScreenerConfig(projectId, screenerConfig),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['expert-project', variables.projectId],
+      })
+    },
+  })
+}
+
+export function useScreenExpert() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ expertId, projectId }: { expertId: string; projectId: string }) =>
+      expertNetworksApi.screenExpert(expertId, projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['experts'] })
+    },
+  })
+}
+
+export function useScreenAllExperts() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, force }: { projectId: string; force?: boolean }) =>
+      expertNetworksApi.screenAllExperts(projectId, force),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['experts', variables.projectId] })
+    },
+  })
+}
+
 export function useExperts(projectId: string, status?: string) {
   return useQuery({
     queryKey: ['experts', projectId, status],
@@ -276,7 +534,7 @@ export function useUpdateExpert() {
       expertId: string
       updates: Partial<Expert>
     }) => expertNetworksApi.updateExpert(expertId, updates),
-    onSuccess: (_, variables) => {
+    onSuccess: () => {
       // Invalidate all expert queries to refresh the list
       queryClient.invalidateQueries({ queryKey: ['experts'] })
     },
@@ -287,6 +545,14 @@ export function useExpertSources(expertId: string) {
   return useQuery({
     queryKey: ['expert-sources', expertId],
     queryFn: () => expertNetworksApi.getExpertSources(expertId),
+    enabled: !!expertId,
+  })
+}
+
+export function useExpertDetails(expertId: string | null) {
+  return useQuery({
+    queryKey: ['expert-details', expertId],
+    queryFn: () => expertNetworksApi.getExpertDetails(expertId!),
     enabled: !!expertId,
   })
 }

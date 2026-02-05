@@ -1,0 +1,58 @@
+Subject: Payment Technology Experts - Project Sigma
+From: Jennifer Wu <jennifer.wu@alphasights.com>
+Date: March 3, 2024 2:15 PM
+
+Hi Team,
+
+Here are additional payment technology experts for your due diligence:
+
+**Michael Torres**
+Position: SVP, Head of Product at Stripe
+Previous Experience: Square, PayPal
+Education: MBA Stanford, BS Computer Science UC Berkeley
+
+Relevant Expertise:
+- Led Stripe's core payments product strategy
+- Built Square's international payment capabilities
+- Deep expertise in merchant acquiring and payment processing
+
+AlphaSights Screener Responses:
+Q: How do you evaluate payment technology companies?
+A: I look at three key areas: (1) unit economics on transaction volume, (2) developer experience and API quality, (3) regulatory compliance infrastructure. The best companies excel at all three.
+
+Q: What technological moats exist in the payments space?
+A: Network effects are the primary moat. Once you have significant merchant and consumer adoption, switching costs are high. Data advantages for fraud detection come second.
+
+Q: Discuss embedded finance trends you're observing.
+A: Every software company wants to be a fintech company now. We're seeing massive demand for embedded payments, lending, and card issuance. This is a tailwind for infrastructure players like Stripe.
+
+Conflict Status: Cleared
+Availability:
+- Monday Mar 4, 10am-12pm PST
+- Thursday Mar 7, 3-5pm PST
+
+**Robert Kim**
+Position: Chief Architect at Adyen
+Previous: Principal Engineer at Amazon Payments
+Education: PhD Computer Science, Carnegie Mellon
+
+Relevant Expertise:
+- Designed Adyen's global payment routing engine
+- Built Amazon's one-click payment infrastructure
+- Expert in payment orchestration and optimization
+
+AlphaSights Screener Responses:
+Q: How do you evaluate payment technology companies?
+A: Technical architecture is foundational. Can the system handle peak loads? How is latency distributed globally? What's the approach to redundancy? Then look at feature velocity.
+
+Q: What technological moats exist in the payments space?
+A: Scale and optimization capabilities. Routing transactions optimally across multiple processors to maximize authorization rates requires enormous data and sophisticated ML models.
+
+Conflict Status: Cleared
+Availability: Flexible week of March 4
+
+Best,
+Jennifer Wu
+AlphaSights
+
+Note: Michael Torres is also available through other networks. If you've already sourced him elsewhere, please let me know and we can focus on other experts.

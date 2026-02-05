@@ -24,7 +24,7 @@ function ExpertNetworksApp() {
 export const ExpertNetworksModule: WorkflowModule = {
   id: 'expert-networks',
   name: 'Expert Networks',
-  description: 'Manage expert calls for due diligence',
+  description: 'AI-powered expert screening & consolidation',
   icon: Users,
   path: '/expert-networks',
   component: ExpertNetworksApp,

@@ -155,7 +155,7 @@ async def get_expert_sources(
 ) -> List[dict]:
     """Get all sources for an expert."""
     query = """
-        SELECT es.*, e.emailId, e.network, e.rawText
+        SELECT es.*, e.id as email_id, e.network as email_network, e.rawText as email_raw_text, e.createdAt as email_date
         FROM ExpertSource es
         JOIN Email e ON es.emailId = e.id
         WHERE es.expertId = :expert_id
@@ -163,3 +163,77 @@ async def get_expert_sources(
     """
     rows = await db.fetch_all(query, {"expert_id": expert_id})
     return [dict(row) for row in rows]
+
+
+async def get_expert_sources_with_provenance(
+    db: databases.Database,
+    expert_id: str
+) -> List[dict]:
+    """Get all sources for an expert with field provenance."""
+    # First get sources
+    sources_query = """
+        SELECT es.*, e.id as email_id, e.network as email_network, e.rawText as email_raw_text, e.createdAt as email_date
+        FROM ExpertSource es
+        JOIN Email e ON es.emailId = e.id
+        WHERE es.expertId = :expert_id
+        ORDER BY es.createdAt DESC
+    """
+    source_rows = await db.fetch_all(sources_query, {"expert_id": expert_id})
+    sources = [dict(row) for row in source_rows]
+    
+    if not sources:
+        return []
+    
+    # Get provenance for all sources
+    source_ids = [s['id'] for s in sources]
+    placeholders = ','.join([f':source_id_{i}' for i in range(len(source_ids))])
+    
+    provenance_query = f"""
+        SELECT * FROM FieldProvenance
+        WHERE expertSourceId IN ({placeholders})
+        ORDER BY fieldName
+    """
+    params = {f'source_id_{i}': sid for i, sid in enumerate(source_ids)}
+    provenance_rows = await db.fetch_all(provenance_query, params)
+    
+    # Group provenance by source ID
+    provenance_by_source = {}
+    for row in provenance_rows:
+        source_id = row['expertSourceId']
+        if source_id not in provenance_by_source:
+            provenance_by_source[source_id] = []
+        provenance_by_source[source_id].append(dict(row))
+    
+    # Attach provenance to sources
+    for source in sources:
+        source['provenance'] = provenance_by_source.get(source['id'], [])
+    
+    return sources
+
+
+async def get_expert_with_full_details(
+    db: databases.Database,
+    expert_id: str
+) -> Optional[dict]:
+    """Get expert with all sources and provenance for detail view."""
+    # Get expert
+    expert = await get_expert(db, expert_id)
+    if not expert:
+        return None
+    
+    # Get sources with provenance
+    sources = await get_expert_sources_with_provenance(db, expert_id)
+    
+    # Get user edits
+    edits_query = """
+        SELECT * FROM UserEdit
+        WHERE expertId = :expert_id
+        ORDER BY createdAt DESC
+    """
+    edit_rows = await db.fetch_all(edits_query, {"expert_id": expert_id})
+    user_edits = [dict(row) for row in edit_rows]
+    
+    expert['sources'] = sources
+    expert['userEdits'] = user_edits
+    
+    return expert

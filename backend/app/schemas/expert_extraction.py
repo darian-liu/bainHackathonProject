@@ -99,7 +99,78 @@ class AIRecommendation(BaseModel):
     missingInfo: Optional[List[str]] = Field(None, description="Key missing information that limited confidence")
 
 
+class AIScreeningResult(BaseModel):
+    """Smart Fit Assessment result."""
+    grade: Literal["strong", "mixed", "weak"] = Field(description="Overall screening grade")
+    score: int = Field(ge=0, le=100, description="Numeric score 0-100")
+    rationale: str = Field(description="2-3 sentence explanation covering background fit and screener assessment")
+    confidence: ConfidenceLevel = Field(description="Confidence in the screening assessment")
+    missingInfo: Optional[List[str]] = Field(None, description="Missing information that would improve assessment")
+    suggestedQuestions: Optional[List[str]] = Field(None, description="Questions to ask the expert or network")
+    questionScores: Optional[List[dict]] = Field(
+        None, 
+        description="Per-question scores: [{questionId, score, notes}]"
+    )
+
+
 class ExpertUpdate(BaseModel):
     """Expert field update model."""
     field: str
     value: Optional[str] = None
+
+
+class ExpertUpdateInfo(BaseModel):
+    """Update information for a single expert."""
+    expertName: str = Field(description="Name of the expert being updated")
+    updateType: Literal["new", "update"] = Field(description="Whether this is a new expert or an update")
+    
+    # Updated fields (only populated if updateType == "update")
+    updatedFields: Optional[List[str]] = Field(
+        None, 
+        description="List of field names that have updates (e.g., 'availability', 'screenerResponses', 'conflictStatus')"
+    )
+    
+    # Global fields apply across all networks
+    globalFieldUpdates: Optional[dict] = Field(
+        None, 
+        description="Updates to global fields: name, employer, title corrections"
+    )
+    
+    # Network-specific updates
+    networkSpecificUpdates: Optional[dict] = Field(
+        None, 
+        description="Updates specific to a network: status, availability, screenerResponses"
+    )
+    
+    # Confidence in the update detection
+    confidence: ConfidenceLevel = Field(default="medium")
+    
+    # Provenance for the update
+    updateProvenance: Optional[FieldProvenance] = None
+
+
+class EmailUpdateAnalysis(BaseModel):
+    """Analysis of whether an email contains updates vs new experts."""
+    
+    isFollowUp: bool = Field(
+        description="Whether this email appears to be a follow-up to previous communications"
+    )
+    
+    threadIndicators: Optional[List[str]] = Field(
+        None, 
+        description="Indicators that this is part of a thread (Re:, FW:, reply references)"
+    )
+    
+    updateSummary: Optional[str] = Field(
+        None, 
+        description="Brief summary of what updates are contained in this email"
+    )
+    
+    expertUpdates: List[ExpertUpdateInfo] = Field(
+        description="Per-expert analysis of new vs update status"
+    )
+    
+    analysisNotes: Optional[List[str]] = Field(
+        None, 
+        description="Notes about the analysis"
+    )
