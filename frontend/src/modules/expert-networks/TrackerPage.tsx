@@ -6,7 +6,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
-import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useLatestScanRun, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, useRecommendExpert, expertNetworksApi } from './api'
+import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,7 +35,7 @@ export function TrackerPage() {
   const screenAllExperts = useScreenAllExperts()
   const autoScanInbox = useAutoScanInbox()
   const bulkDeleteExperts = useBulkDeleteExperts()
-  const recommendExpert = useRecommendExpert()
+  const recommendExpert = null // TODO: implement useRecommendExpert hook
 
   // Document context store
   const { documents, loadDocuments } = useDocumentContextStore()

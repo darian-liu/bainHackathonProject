@@ -118,13 +118,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_expert_details",
-            "description": "Get full details for a specific expert including sources and field provenance.",
+            "description": "Get full details for a specific expert including sources, screening, and field provenance. You can pass either the expert's database ID or their name (full or partial, e.g. 'Michael' or 'Robert Chen').",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "expert_id": {
                         "type": "string",
-                        "description": "The expert ID to get details for.",
+                        "description": "The expert's database ID or name (full or partial). Name search is case-insensitive.",
+                    },
+                    "project_id": {
+                        "type": "string",
+                        "description": "The project ID (needed for name-based lookups).",
                     }
                 },
                 "required": ["expert_id"],
@@ -141,28 +145,26 @@ async def _execute_tool(
     ctx = get_document_context()
 
     if name == "search_documents":
-        results = ctx.get_relevant_context(arguments["query"], n_results=5)
+        results = ctx.search(arguments["query"], n_results=5)
         if not results:
             return "No relevant documents found."
         parts = []
         for i, r in enumerate(results, 1):
-            filename = r.get("metadata", {}).get("filename", "unknown")
-            score = r.get("score", 0)
-            parts.append(f"[{i}] {filename} (score: {score:.2f})\n{r['text'][:500]}")
+            parts.append(f"[{i}] {r.filename} (score: {r.score:.2f})\n{r.text[:500]}")
         return "\n\n---\n\n".join(parts)
 
     elif name == "list_documents":
         docs = ctx.get_all_documents()
         if not docs:
             return "No documents have been ingested yet."
-        lines = [f"- {d['filename']} (id: {d['file_id']})" for d in docs]
+        lines = [f"- {d.filename} (id: {d.file_id})" for d in docs]
         return f"Available documents ({len(docs)}):\n" + "\n".join(lines)
 
     elif name == "summarize_documents":
         chunks = ctx.get_document_chunks(arguments["file_id"])
         if not chunks:
             return f"No chunks found for file_id '{arguments['file_id']}'."
-        full_text = "\n\n".join(c["text"] for c in chunks)
+        full_text = "\n\n".join(chunks)
         # Return the text for the LLM to summarize
         return f"Document content ({len(chunks)} chunks):\n\n{full_text[:8000]}"
 
@@ -174,9 +176,10 @@ async def _execute_tool(
         return f"File written: {filename} ({len(arguments['content'])} chars). Available at /api/agent/download/{filename}"
 
     elif name == "query_experts":
-        pid = arguments.get("project_id") or project_id
-        if not pid:
-            return "Error: No project_id provided. Please specify a project_id."
+        # Always prefer the real project_id from the request over what the LLM hallucinates
+        pid = project_id or arguments.get("project_id")
+        if not pid or pid in ("current_project", "current", "default"):
+            return "Error: No project selected. Please select a project from the dropdown above."
 
         db = await get_database()
         status_filter = arguments.get("status")
@@ -187,7 +190,7 @@ async def _execute_tool(
         if screening_grade:
             all_experts = [
                 e for e in all_experts
-                if (e.get("screeningGrade") or "").lower() == screening_grade.lower()
+                if (e.get("aiScreeningGrade") or "").lower() == screening_grade.lower()
             ]
 
         # Apply limit
@@ -204,13 +207,20 @@ async def _execute_tool(
                 line += f" | {e['canonicalEmployer']}"
             if e.get("canonicalTitle"):
                 line += f" | {e['canonicalTitle']}"
-            if e.get("screeningGrade"):
-                line += f" | Grade: {e['screeningGrade']}"
-            if e.get("screeningScore") is not None:
-                line += f" (score: {e['screeningScore']})"
-            if e.get("screeningRationale"):
-                line += f"\n  Rationale: {e['screeningRationale'][:200]}"
-            line += f"\n  Status: {e.get('status', 'unknown')} | ID: {e['id']}"
+            line += f"\n  Status: {e.get('status', 'unknown')}"
+            if e.get("network"):
+                line += f" | Network: {e['network']}"
+            if e.get("conflictStatus"):
+                line += f" | Conflict: {e['conflictStatus']}"
+            if e.get("aiScreeningGrade"):
+                line += f"\n  AI Screening: {e['aiScreeningGrade']} (score: {e.get('aiScreeningScore', 'N/A')}/100, confidence: {e.get('aiScreeningConfidence', 'N/A')})"
+            if e.get("aiScreeningRationale"):
+                line += f"\n  Screening Rationale: {e['aiScreeningRationale']}"
+            if e.get("aiRecommendation"):
+                line += f"\n  AI Recommendation: {e['aiRecommendation']}"
+            if e.get("aiRecommendationRationale"):
+                line += f"\n  Recommendation Rationale: {e['aiRecommendationRationale']}"
+            line += f"\n  Expert ID: {e['id']}"
             lines.append(line)
 
         header = f"Found {len(all_experts)} experts"
@@ -220,33 +230,59 @@ async def _execute_tool(
 
     elif name == "get_expert_details":
         db = await get_database()
-        detail = await expert_queries.get_expert_with_full_details(
-            db, arguments["expert_id"]
-        )
+        expert_id_or_name = arguments["expert_id"]
+
+        # Try direct ID lookup first
+        detail = await expert_queries.get_expert_with_full_details(db, expert_id_or_name)
+
+        # If not found by ID, try name-based search
         if not detail:
-            return f"Expert '{arguments['expert_id']}' not found."
+            pid = project_id or arguments.get("project_id")
+            if pid and pid not in ("current_project", "current", "default"):
+                matches = await expert_queries.find_experts_by_name(db, pid, expert_id_or_name)
+                if matches:
+                    # Use the first match
+                    detail = await expert_queries.get_expert_with_full_details(db, matches[0]["id"])
+
+        if not detail:
+            return f"Expert '{expert_id_or_name}' not found. Try using query_experts first to see available experts and their IDs."
 
         parts = [
             f"# {detail['canonicalName']}",
-            f"Employer: {detail.get('canonicalEmployer', 'N/A')}",
-            f"Title: {detail.get('canonicalTitle', 'N/A')}",
-            f"Status: {detail.get('status', 'N/A')}",
+            f"**Employer:** {detail.get('canonicalEmployer', 'N/A')}",
+            f"**Title:** {detail.get('canonicalTitle', 'N/A')}",
+            f"**Status:** {detail.get('status', 'N/A')}",
+            f"**Conflict Status:** {detail.get('conflictStatus', 'N/A')}",
         ]
-        if detail.get("screeningGrade"):
-            parts.append(f"Screening: {detail['screeningGrade']} ({detail.get('screeningScore', 'N/A')})")
-        if detail.get("screeningRationale"):
-            parts.append(f"Rationale: {detail['screeningRationale']}")
+        if detail.get("aiScreeningGrade"):
+            parts.append(f"\n## AI Screening")
+            parts.append(f"- **Grade:** {detail['aiScreeningGrade']}")
+            parts.append(f"- **Score:** {detail.get('aiScreeningScore', 'N/A')}/100")
+            parts.append(f"- **Confidence:** {detail.get('aiScreeningConfidence', 'N/A')}")
+            if detail.get("aiScreeningRationale"):
+                parts.append(f"- **Rationale:** {detail['aiScreeningRationale']}")
+            if detail.get("aiScreeningMissingInfo"):
+                parts.append(f"- **Missing Info:** {detail['aiScreeningMissingInfo']}")
         if detail.get("aiRecommendation"):
-            parts.append(f"AI Recommendation: {detail['aiRecommendation']}")
+            parts.append(f"\n## AI Recommendation")
+            parts.append(f"- **Recommendation:** {detail['aiRecommendation']}")
+            if detail.get("aiRecommendationRationale"):
+                parts.append(f"- **Rationale:** {detail['aiRecommendationRationale']}")
+            if detail.get("aiRecommendationConfidence"):
+                parts.append(f"- **Confidence:** {detail['aiRecommendationConfidence']}")
 
         sources = detail.get("sources", [])
         if sources:
             parts.append(f"\n## Sources ({len(sources)})")
             for s in sources:
                 network = s.get("email_network", "unknown")
-                parts.append(f"- Network: {network}")
+                parts.append(f"- **Network:** {network}")
+                if s.get("extractedBio"):
+                    parts.append(f"  - Bio: {s['extractedBio']}")
+                if s.get("extractedScreener"):
+                    parts.append(f"  - Screener Responses: {s['extractedScreener']}")
                 for p in s.get("provenance", []):
-                    parts.append(f"  - {p['fieldName']}: {p.get('extractedValue', 'N/A')}")
+                    parts.append(f"  - {p['fieldName']}: {p.get('excerptText', 'N/A')}")
 
         return "\n".join(parts)
 
@@ -287,8 +323,11 @@ class DocumentAgent:
             )
         )
 
-        # Build messages
-        messages = [{"role": "system", "content": DOCUMENT_AGENT_SYSTEM_PROMPT}]
+        # Build messages with project context
+        system_prompt = DOCUMENT_AGENT_SYSTEM_PROMPT
+        if project_id:
+            system_prompt += f"\n\n## Current Project\nThe user has selected project_id: \"{project_id}\". When calling query_experts or get_expert_details, always use this exact project_id. Do NOT use placeholder values like \"current_project\"."
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(conversation_history)
         messages.append({"role": "user", "content": message})
 
@@ -348,9 +387,10 @@ class DocumentAgent:
                         result = await _execute_tool(fn_name, fn_args, project_id)
 
                         tool_calls_log.append({
-                            "tool": fn_name,
+                            "id": tc.id,
+                            "name": fn_name,
                             "arguments": fn_args,
-                            "result_preview": result[:200],
+                            "result": {"success": True},
                         })
 
                         messages.append({

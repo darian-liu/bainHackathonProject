@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Upload, Loader2, CheckCircle, XCircle } from 'lucide-react'
-import { uploadDocument } from '@/stores/agentStore'
+import { uploadDocument, useAgentStore } from '@/stores/agentStore'
 
 interface UploadStatus {
   filename: string
@@ -12,13 +12,12 @@ interface UploadStatus {
 export function UploadZone() {
   const [isDragging, setIsDragging] = useState(false)
   const [uploads, setUploads] = useState<UploadStatus[]>([])
+  const addUploadedFile = useAgentStore((s) => s.addUploadedFile)
 
   const handleUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return
 
     for (const file of Array.from(files)) {
-      const uploadId = crypto.randomUUID()
-
       // Add to uploads list
       setUploads((prev) => [
         ...prev,
@@ -32,30 +31,35 @@ export function UploadZone() {
           prev.map((u) =>
             u.filename === file.name
               ? {
-                  ...u,
-                  status: result.success ? 'success' : 'error',
-                  chunks: result.chunks,
-                  error: result.error,
-                }
+                ...u,
+                status: result.success ? 'success' : 'error',
+                chunks: result.chunks,
+                error: result.error,
+              }
               : u
           )
         )
 
-        // Remove successful uploads after a delay
+        // Add to persistent file list and clear from upload status after a short delay
         if (result.success) {
+          addUploadedFile({
+            file_id: result.file_id || `upload-${file.name}`,
+            filename: file.name,
+            chunks: result.chunks || 0,
+          })
           setTimeout(() => {
             setUploads((prev) => prev.filter((u) => u.filename !== file.name))
-          }, 3000)
+          }, 2000)
         }
       } catch (error) {
         setUploads((prev) =>
           prev.map((u) =>
             u.filename === file.name
               ? {
-                  ...u,
-                  status: 'error',
-                  error: error instanceof Error ? error.message : 'Upload failed',
-                }
+                ...u,
+                status: 'error',
+                error: error instanceof Error ? error.message : 'Upload failed',
+              }
               : u
           )
         )
@@ -93,11 +97,10 @@ export function UploadZone() {
   return (
     <div className="p-4">
       <div
-        className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
-          isDragging
-            ? 'border-primary bg-primary/5'
-            : 'border-gray-200 hover:border-gray-300'
-        }`}
+        className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${isDragging
+          ? 'border-primary bg-primary/5'
+          : 'border-gray-200 hover:border-gray-300'
+          }`}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}

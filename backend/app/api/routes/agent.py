@@ -91,45 +91,85 @@ async def agent_upload(file: UploadFile = File(...)):
     content = await file.read()
     logger.info("Upload received: filename=%s size=%d ext=%s", file.filename, len(content), ext)
 
-    # Parse and chunk
-    if ext == ".txt":
-        text = content.decode("utf-8", errors="replace")
-    else:
+    try:
+        # Parse and chunk
+        if ext in (".txt", ".md"):
+            text = content.decode("utf-8", errors="replace")
+        else:
+            parser = DocumentParser()
+            text = parser.parse(content, file.filename)
+
         parser = DocumentParser()
-        text = parser.parse(content, file.filename)
+        chunks = parser.chunk(text)
 
-    parser = DocumentParser()
-    chunks = parser.chunk(text)
+        if not chunks:
+            raise HTTPException(status_code=400, detail="No text could be extracted from the file.")
 
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No text could be extracted from the file.")
+        logger.info("Parsed %d chunks from %s", len(chunks), file.filename)
 
-    logger.info("Parsed %d chunks from %s", len(chunks), file.filename)
+        # Ingest into vector store
+        file_id = f"upload-{uuid.uuid4().hex[:8]}-{file.filename}"
+        vector_store = get_vector_store()
 
-    # Ingest into vector store
-    file_id = f"upload-{uuid.uuid4().hex[:8]}-{file.filename}"
-    vector_store = get_vector_store()
+        metadata = [
+            {
+                "file_id": file_id,
+                "filename": file.filename,
+                "chunk_index": i,
+                "source": "agent_upload",
+            }
+            for i in range(len(chunks))
+        ]
+        ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
 
-    metadata = [
-        {
-            "file_id": file_id,
+        vector_store.add_documents(chunks, metadata, ids)
+        logger.info("Ingested %d chunks for %s (file_id=%s)", len(chunks), file.filename, file_id)
+
+        return {
+            "success": True,
+            "status": "ingested",
             "filename": file.filename,
-            "chunk_index": i,
-            "source": "agent_upload",
+            "file_id": file_id,
+            "chunks": len(chunks),
         }
-        for i in range(len(chunks))
-    ]
-    ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Upload failed for %s: %s", file.filename, str(e))
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-    vector_store.add_documents(chunks, metadata, ids)
-    logger.info("Ingested %d chunks for %s (file_id=%s)", len(chunks), file.filename, file_id)
 
-    return {
-        "status": "ingested",
-        "filename": file.filename,
-        "file_id": file_id,
-        "chunks": len(chunks),
-    }
+# ── Documents (list uploaded files) ───────────────────────────────────
+
+@router.get("/documents")
+async def agent_documents():
+    """List all files uploaded to the agent's vector store."""
+    try:
+        vector_store = get_vector_store()
+        collection = vector_store.collection
+        result = collection.get(
+            where={"source": "agent_upload"},
+            include=["metadatas"],
+        )
+
+        if not result["metadatas"]:
+            return {"files": []}
+
+        seen: dict[str, dict] = {}
+        for meta in result["metadatas"]:
+            fid = meta.get("file_id", "unknown")
+            if fid not in seen:
+                seen[fid] = {
+                    "file_id": fid,
+                    "filename": meta.get("filename", fid),
+                    "chunks": 0,
+                }
+            seen[fid]["chunks"] += 1
+
+        return {"files": list(seen.values())}
+    except Exception as e:
+        logger.exception("Failed to list documents: %s", str(e))
+        return {"files": []}
 
 
 # ── Download ──────────────────────────────────────────────────────────

@@ -30,10 +30,18 @@ class VectorStore:
             client_config["base_url"] = settings.openai_base_url
         self.openai = OpenAI(**client_config)
 
+        # Detect Portkey prefix from model name (e.g. "@personal-openai/gpt-4o" -> "@personal-openai/")
+        model_name = settings.openai_model or ""
+        if "/" in model_name:
+            self._model_prefix = model_name.rsplit("/", 1)[0] + "/"
+        else:
+            self._model_prefix = ""
+
     def embed(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings using OpenAI."""
+        model = f"{self._model_prefix}text-embedding-3-small"
         response = self.openai.embeddings.create(
-            model="text-embedding-3-small", input=texts
+            model=model, input=texts
         )
         return [e.embedding for e in response.data]
 

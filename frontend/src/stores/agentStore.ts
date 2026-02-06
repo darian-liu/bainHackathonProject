@@ -23,17 +23,29 @@ export interface ToolInfo {
   parameters: Record<string, unknown>
 }
 
+export interface UploadedFile {
+  file_id: string
+  filename: string
+  chunks: number
+}
+
 interface AgentStore {
   messages: AgentMessage[]
   isProcessing: boolean
   sessionId: string
+  projectId: string | null
   error: string | null
   availableTools: ToolInfo[]
+  uploadedFiles: UploadedFile[]
 
   sendMessage: (content: string) => Promise<void>
   clearMessages: () => Promise<void>
   loadTools: () => Promise<void>
+  loadUploadedFiles: () => Promise<void>
+  addUploadedFile: (file: UploadedFile) => void
+  removeUploadedFile: (fileId: string) => void
   setSessionId: (sessionId: string) => void
+  setProjectId: (projectId: string | null) => void
   clearError: () => void
 }
 
@@ -41,11 +53,13 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   messages: [],
   isProcessing: false,
   sessionId: 'default',
+  projectId: null,
   error: null,
   availableTools: [],
+  uploadedFiles: [],
 
   sendMessage: async (content: string) => {
-    const { sessionId } = get()
+    const { sessionId, projectId } = get()
 
     // Add user message immediately
     const userMessage: AgentMessage = {
@@ -68,6 +82,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         body: JSON.stringify({
           message: content,
           session_id: sessionId,
+          project_id: projectId,
         }),
       })
 
@@ -116,21 +131,37 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   loadTools: async () => {
+    // Tools are handled internally by the agent, no need to fetch them
+    set({ availableTools: [] })
+  },
+
+  loadUploadedFiles: async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/agent/tools`)
-      if (!res.ok) {
-        throw new Error('Failed to load tools')
+      const res = await fetch(`${API_BASE}/api/agent/documents`)
+      if (res.ok) {
+        const data = await res.json()
+        set({ uploadedFiles: data.files || [] })
       }
-      const data = await res.json()
-      set({ availableTools: data.tools || [] })
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to load tools',
-      })
+    } catch {
+      // Silently fail — files list is non-critical
     }
   },
 
+  addUploadedFile: (file: UploadedFile) => {
+    set((state) => ({
+      uploadedFiles: [...state.uploadedFiles.filter(f => f.file_id !== file.file_id), file],
+    }))
+  },
+
+  removeUploadedFile: (fileId: string) => {
+    set((state) => ({
+      uploadedFiles: state.uploadedFiles.filter(f => f.file_id !== fileId),
+    }))
+  },
+
   setSessionId: (sessionId: string) => set({ sessionId }),
+
+  setProjectId: (projectId: string | null) => set({ projectId }),
 
   clearError: () => set({ error: null }),
 }))
@@ -139,6 +170,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 export async function uploadDocument(file: File, sessionId: string = 'default'): Promise<{
   success: boolean
   filename: string
+  file_id?: string
   chunks?: number
   error?: string
 }> {

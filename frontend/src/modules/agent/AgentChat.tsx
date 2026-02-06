@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, Trash2, Wrench, Download } from 'lucide-react'
+import { Send, Loader2, Trash2, Paperclip, Download } from 'lucide-react'
 import { useAgentStore, type AgentMessage } from '@/stores/agentStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ToolCallCard } from './ToolCallCard'
+import ReactMarkdown from 'react-markdown'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -55,8 +56,8 @@ export function AgentChat({ onToggleTools }: AgentChatProps) {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onToggleTools}>
-            <Wrench className="w-4 h-4 mr-2" />
-            Tools
+            <Paperclip className="w-4 h-4 mr-2" />
+            Files
           </Button>
           <Button
             variant="ghost"
@@ -126,56 +127,6 @@ export function AgentChat({ onToggleTools }: AgentChatProps) {
   )
 }
 
-/**
- * Parse message content and replace sandbox download links with clickable buttons.
- * Matches patterns like: [Download the document](sandbox:/agent_outputs/filename.md)
- */
-function renderMessageContent(content: string) {
-  // Regex to match markdown links with sandbox: URLs
-  const linkRegex = /\[([^\]]+)\]\(sandbox:\/?(agent_outputs\/)?([^)]+)\)/g
-
-  const parts: (string | JSX.Element)[] = []
-  let lastIndex = 0
-  let match
-
-  while ((match = linkRegex.exec(content)) !== null) {
-    // Add text before the match
-    if (match.index > lastIndex) {
-      parts.push(content.slice(lastIndex, match.index))
-    }
-
-    const linkText = match[1]
-    const filename = match[3]
-
-    // Add download button
-    parts.push(
-      <a
-        key={match.index}
-        href={`${API_BASE}/api/agent/download/${encodeURIComponent(filename)}`}
-        download={filename}
-        className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-primary/10 hover:bg-primary/20 text-primary rounded transition-colors"
-      >
-        <Download className="w-3 h-3" />
-        {linkText}
-      </a>
-    )
-
-    lastIndex = match.index + match[0].length
-  }
-
-  // Add remaining text
-  if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex))
-  }
-
-  // If no links found, return original content
-  if (parts.length === 0) {
-    return content
-  }
-
-  return parts
-}
-
 function MessageBubble({ message }: { message: AgentMessage }) {
   const isUser = message.role === 'user'
 
@@ -183,19 +134,52 @@ function MessageBubble({ message }: { message: AgentMessage }) {
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`max-w-[80%] rounded-lg px-4 py-2 ${isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted'
+          ? 'bg-primary text-primary-foreground'
+          : 'bg-muted'
           }`}
       >
-        <div className="whitespace-pre-wrap">{isUser ? message.content : renderMessageContent(message.content)}</div>
+        <div className={isUser ? "whitespace-pre-wrap" : ""}>
+          {isUser ? message.content : (
+            <ErrorBoundary fallback={<div className="text-red-500 text-sm">Error rendering message</div>}>
+              <div className="prose prose-sm max-w-none prose-headings:text-base prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-strong:text-gray-900 prose-a:text-primary prose-hr:my-3 [&>*+*]:mt-2">
+                <ReactMarkdown
+                  components={{
+                    a: ({ href, children }) => {
+                      // Handle sandbox download links
+                      const sandboxMatch = href?.match(/^sandbox:\/?(?:agent_outputs\/)?(.+)$/)
+                      if (sandboxMatch) {
+                        const filename = sandboxMatch[1]
+                        return (
+                          <a
+                            href={`${API_BASE}/api/agent/download/${encodeURIComponent(filename)}`}
+                            download={filename}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-sm bg-primary/10 hover:bg-primary/20 text-primary rounded transition-colors no-underline"
+                          >
+                            <Download className="w-3 h-3" />
+                            {children}
+                          </a>
+                        )
+                      }
+                      return <a href={href} className="text-primary underline">{children}</a>
+                    },
+                  }}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              </div>
+            </ErrorBoundary>
+          )}
+        </div>
 
         {/* Show tool calls for assistant messages */}
         {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70 font-medium">Tools used:</div>
-            {message.toolCalls.map((toolCall) => (
-              <ToolCallCard key={toolCall.id} toolCall={toolCall} />
-            ))}
+            <ErrorBoundary fallback={<div className="text-red-500 text-xs">Error rendering tool calls</div>}>
+              {message.toolCalls.map((toolCall, index) => (
+                <ToolCallCard key={toolCall.id || `tool-${index}`} toolCall={toolCall} />
+              ))}
+            </ErrorBoundary>
           </div>
         )}
 
@@ -208,4 +192,14 @@ function MessageBubble({ message }: { message: AgentMessage }) {
       </div>
     </div>
   )
+}
+
+// Simple error boundary component
+function ErrorBoundary({ children, fallback }: { children: React.ReactNode, fallback: React.ReactNode }) {
+  try {
+    return <>{children}</>
+  } catch (error) {
+    console.error('Rendering error:', error)
+    return <>{fallback}</>
+  }
 }
