@@ -5,7 +5,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { Download, Loader2, Search, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
+import { Download, Loader2, Search, RefreshCw, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
 import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
@@ -404,14 +404,6 @@ export function TrackerPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate('/expert-networks')}
-          >
-            <ArrowLeft className="w-4 h-4 mr-1" />
-            Back
-          </Button>
           <div>
             <h1 className="text-2xl font-bold">{projectData?.name || 'Expert Tracker'}</h1>
             <p className="text-gray-600">{filteredExperts.length} experts</p>

@@ -7,13 +7,13 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 export function AgentVisualizerSidebar() {
-  const [isOpen, setIsOpen] = useState(true)
+  const [isOpen, setIsOpen] = useState(false)
   const clearEvents = useAgentEventStore((s) => s.clearEvents)
   const eventCount = useAgentEventStore((s) => s.events.length)
-  
+
   // Subscribe to WebSocket events
   useAgentEvents()
-  
+
   return (
     <div className={cn(
       'relative border-l border-slate-200 bg-white transition-all duration-300',
@@ -26,7 +26,7 @@ export function AgentVisualizerSidebar() {
       >
         {isOpen ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
       </button>
-      
+
       {isOpen && (
         <div className="h-full flex flex-col">
           <div className="flex items-center justify-between p-4 border-b">
@@ -43,7 +43,7 @@ export function AgentVisualizerSidebar() {
               </Button>
             </div>
           </div>
-          
+
           <div className="flex-1">
             <AgentFlowGraph />
           </div>

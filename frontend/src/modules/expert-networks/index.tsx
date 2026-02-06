@@ -3,8 +3,7 @@
  */
 
 import { Users } from 'lucide-react'
-import { Routes, Route } from 'react-router-dom'
-import { ProjectListPage } from './ProjectListPage'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { TrackerPage } from './TrackerPage'
 import { IngestPage } from './IngestPage'
 import type { WorkflowModule } from '../module-registry'
@@ -13,7 +12,7 @@ import type { WorkflowModule } from '../module-registry'
 function ExpertNetworksApp() {
   return (
     <Routes>
-      <Route index element={<ProjectListPage />} />
+      <Route index element={<Navigate to="/" replace />} />
       <Route path=":projectId/tracker" element={<TrackerPage />} />
       <Route path=":projectId/ingest" element={<IngestPage />} />
     </Routes>
