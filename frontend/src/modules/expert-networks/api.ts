@@ -176,7 +176,7 @@ export const expertNetworksApi = {
   // Auto-scan Outlook inbox
   autoScanInbox: async (
     projectId: string,
-    maxEmails: number = 50
+    maxEmails: number = 5
   ): Promise<AutoScanResult> => {
     const res = await fetch(
       `${API_BASE}/api/expert-networks/projects/${projectId}/auto-scan-inbox`,

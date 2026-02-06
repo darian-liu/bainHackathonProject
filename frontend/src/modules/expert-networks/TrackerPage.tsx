@@ -5,7 +5,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { Download, Loader2, Search, RefreshCw, AlertCircle, CheckCircle2, X, Settings2, Plus, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
+import { Download, Loader2, Search, RefreshCw, AlertCircle, CheckCircle2, X, Settings2, Trash2, Sparkles, ArrowUp, ArrowDown, Eye, Inbox, FileText } from 'lucide-react'
 import { useExperts, useUpdateExpert, useProject, useLatestIngestionLog, useUpdateScreenerConfig, useScreenExpert, useScreenAllExperts, useAutoScanInbox, useBulkDeleteExperts, expertNetworksApi } from './api'
 import { ExpertDetailPanel } from './ExpertDetailPanel'
 import { Button } from '@/components/ui/button'
@@ -87,7 +87,7 @@ export function TrackerPage() {
       setSearchParams({})
 
       // Execute the scan (reduced to 10 emails for speed)
-      autoScanInbox.mutateAsync({ projectId, maxEmails: 10 })
+      autoScanInbox.mutateAsync({ projectId, maxEmails: 5 })
         .then((result) => {
           // Log full result for debugging
           console.log('[TrackerPage] Scan complete, full result:', JSON.stringify(result, null, 2))
@@ -463,10 +463,10 @@ export function TrackerPage() {
         onQuestionsChange={setScreenerQuestions}
         autoScreen={autoScreenEnabled}
         onAutoScreenChange={setAutoScreenEnabled}
-        onSave={async () => {
+        onSave={async (parsedQuestions: ScreenerQuestion[]) => {
           await updateScreenerConfig.mutateAsync({
             projectId: projectId!,
-            screenerConfig: { questions: screenerQuestions, autoScreen: autoScreenEnabled },
+            screenerConfig: { questions: parsedQuestions, autoScreen: autoScreenEnabled },
           })
           setShowScreenerConfig(false)
         }}
@@ -1200,7 +1200,44 @@ function ExpertRow({
 /* Filter header components removed - using simple sortable headers inline */
 
 /**
- * Screener Config Dialog - Configure screener questions and rubric
+ * Serialize ScreenerQuestion[] back to bulk text format.
+ */
+function questionsToText(questions: ScreenerQuestion[]): string {
+  if (!questions || questions.length === 0) return ''
+  return questions.map((q, i) => {
+    let line = `Question ${i + 1}: ${q.text}`
+    if (q.idealAnswer) line += `\nIdeal answer: ${q.idealAnswer}`
+    return line
+  }).join('\n\n')
+}
+
+/**
+ * Best-effort parse of bulk screener text into ScreenerQuestion[].
+ */
+function parseBulkScreenerText(text: string): ScreenerQuestion[] {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+
+  const blocks = trimmed.split(/(?=question\s*\d+\s*:)/i).filter(Boolean)
+
+  if (blocks.length <= 1 && !/^question\s*\d+\s*:/i.test(trimmed)) {
+    return [{ id: 'q1', order: 1, text: trimmed, idealAnswer: '' }]
+  }
+
+  return blocks.map((block, i) => {
+    const withoutPrefix = block.replace(/^question\s*\d+\s*:\s*/i, '').trim()
+    const idealMatch = withoutPrefix.split(/ideal\s*answer\s*:\s*/i)
+    return {
+      id: `q${i + 1}`,
+      order: i + 1,
+      text: (idealMatch[0] || '').trim(),
+      idealAnswer: (idealMatch[1] || '').trim(),
+    }
+  })
+}
+
+/**
+ * Screener Config Dialog - Bulk text input for screener questions
  */
 function ScreenerConfigDialog({
   open,
@@ -1218,30 +1255,20 @@ function ScreenerConfigDialog({
   onQuestionsChange: (questions: ScreenerQuestion[]) => void
   autoScreen: boolean
   onAutoScreenChange: (enabled: boolean) => void
-  onSave: () => void
+  onSave: (questions: ScreenerQuestion[]) => void
   isSaving: boolean
 }) {
-  const addQuestion = () => {
-    onQuestionsChange([
-      ...questions,
-      {
-        id: `q${Date.now()}`,
-        order: questions.length + 1,
-        text: '',
-        idealAnswer: '',
-        redFlags: '',
-      },
-    ])
-  }
+  const [bulkText, setBulkText] = useState(questionsToText(questions))
 
-  const updateQuestion = (index: number, field: keyof ScreenerQuestion, value: any) => {
-    const updated = [...questions]
-    updated[index] = { ...updated[index], [field]: value }
-    onQuestionsChange(updated)
-  }
+  // Sync when dialog opens with new questions
+  useEffect(() => {
+    if (open) setBulkText(questionsToText(questions))
+  }, [open])
 
-  const removeQuestion = (index: number) => {
-    onQuestionsChange(questions.filter((_, i) => i !== index))
+  const handleSave = () => {
+    const parsed = parseBulkScreenerText(bulkText)
+    onQuestionsChange(parsed)
+    onSave(parsed)
   }
 
   return (
@@ -1250,7 +1277,7 @@ function ScreenerConfigDialog({
         <DialogHeader>
           <DialogTitle>Screener Configuration</DialogTitle>
           <DialogDescription>
-            Define screener questions and ideal answers. The AI will use this rubric to assess experts.
+            Paste your screening questions and ideal answers. The AI will use these to assess experts.
           </DialogDescription>
         </DialogHeader>
 
@@ -1271,91 +1298,26 @@ function ScreenerConfigDialog({
             />
           </div>
 
-          <div className="border-t pt-4">
-            <p className="font-medium text-gray-700 mb-3">Screener Questions</p>
+          {/* Bulk text input */}
+          <div>
+            <Textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              rows={12}
+              className="w-full text-sm resize-y"
+              placeholder={`Question 1: Have you led global cold-chain distribution for biologics?\nIdeal answer: Yes — direct ownership of temperature-controlled logistics across regions.\n\nQuestion 2: Experience with specialty pharma launch readiness?\nIdeal answer: Hands-on experience coordinating 3PLs, wholesalers, and demand planning.\n\nQuestion 3: Familiarity with rare-disease distribution models?\nIdeal answer: Deep experience with low-volume, high-complexity therapies.`}
+            />
+            <p className="text-xs text-gray-400 mt-2">
+              Use "Question N:" and "Ideal answer:" to structure entries, or paste free-form text.
+            </p>
           </div>
-
-          {questions.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              <p>No screener questions configured.</p>
-              <p className="text-sm mt-1">Add questions to enable detailed rubric-based screening.</p>
-            </div>
-          ) : (
-            questions.map((q, index) => (
-              <div key={q.id} className="border rounded-lg p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-sm text-gray-500">Question {index + 1}</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeQuestion(index)}
-                    className="text-red-500 hover:text-red-700"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Question</Label>
-                  <Input
-                    value={q.text}
-                    onChange={(e) => updateQuestion(index, 'text', e.target.value)}
-                    placeholder="e.g., What is your experience with retail analytics?"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Ideal Answer</Label>
-                  <Textarea
-                    value={q.idealAnswer}
-                    onChange={(e) => updateQuestion(index, 'idealAnswer', e.target.value)}
-                    placeholder="Describe what a strong answer looks like..."
-                    rows={2}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Weight (1-3)</Label>
-                    <Select
-                      value={String(q.order || 1)}
-                      onValueChange={(v) => updateQuestion(index, 'order', parseInt(v))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1">1 - Standard</SelectItem>
-                        <SelectItem value="2">2 - Important</SelectItem>
-                        <SelectItem value="3">3 - Critical</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Red Flags (comma separated)</Label>
-                    <Input
-                      value={q.redFlags || ''}
-                      onChange={(e) => updateQuestion(index, 'redFlags', e.target.value)}
-                      placeholder="e.g., no experience, competitor"
-                    />
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-
-          <Button variant="outline" onClick={addQuestion} className="w-full">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Question
-          </Button>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={onSave} disabled={isSaving}>
+          <Button onClick={handleSave} disabled={isSaving}>
             {isSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             Save Configuration
           </Button>

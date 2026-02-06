@@ -84,7 +84,7 @@ export function IngestPage() {
       navigate(`/expert-networks/${projectId}/tracker?scanning=true`)
 
       // Start the scan (this will be picked up by TrackerPage)
-      await autoScanInbox.mutateAsync({ projectId, maxEmails: 50 })
+      await autoScanInbox.mutateAsync({ projectId, maxEmails: 5 })
     } catch (error) {
       console.error('Auto-scan failed:', error)
       // Navigate back with error

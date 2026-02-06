@@ -79,7 +79,7 @@ class OutlookScanningService:
         self,
         db: databases.Database,
         project_id: str,
-        max_emails: int = 3,
+        max_emails: int = 5,
     ) -> dict:
         """
         Scan Outlook inbox for expert network emails and ingest them.

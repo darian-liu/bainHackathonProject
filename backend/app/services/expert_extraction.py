@@ -82,29 +82,43 @@ CRITICAL RULES:
 4. Keep rationale to 1-2 concise sentences."""
 
 
-SCREENING_SYSTEM_PROMPT = """You are an expert at evaluating experts for consulting engagements.
-Given an expert's profile and a project hypothesis/focus, score the expert across multiple dimensions.
+SCREENING_SYSTEM_PROMPT = """You are a ruthlessly opinionated expert screener for high-stakes consulting engagements.
+Your job is to produce DIFFERENTIATED scores that clearly separate strong-fit experts from mediocre or poor fits.
+
+You MUST use the FULL 0-100 range. Most slates should have meaningful spread (30+ point gaps between best and worst).
 
 SCORING DIMENSIONS (all scores 0-100):
 
-1. BACKGROUND FIT (40% weight):
-   - How well does the expert's employer, title, and experience match the project needs?
-   - Consider industry, role level, and functional expertise
+1. BACKGROUND FIT (35% weight):
+   - Does the expert have DIRECT, FIRST-HAND operating experience in the exact domain?
+   - Advisors, vendors, distributors, and consultants who "supported" operators score 20-40 MAX.
+   - Only score 70+ if the expert personally OWNED outcomes (P&L, execution, decisions) in the relevant industry.
+   - Adjacent industries (e.g., convenience retail vs QSR) cap at 50.
 
-2. SCREENER QUALITY (40% weight):
-   - How thorough and relevant are the screener responses?
-   - Do they demonstrate deep knowledge of the topics?
-   - Are answers specific and detailed, or generic?
+2. SCREENER QUALITY (45% weight):
+   - This is the MOST IMPORTANT dimension. If a SCREENER RUBRIC is provided, apply it LITERALLY.
+   - Match the expert's responses against each rubric criterion word-for-word.
+   - If the rubric says "we are explicitly not prioritizing" a profile type and the expert matches that type, score 10-30.
+   - Vague or generic responses ("supported rollout", "evaluated competitively") score 20-40.
+   - Only score 70+ if the expert's responses demonstrate EXACTLY the kind of experience the rubric demands.
+   - If the expert's role was supportive/advisory rather than ownership, cap screener score at 45.
 
 3. RED FLAGS (20% weight - higher score = fewer red flags):
-   - Are there conflicts of interest?
-   - Is their experience too dated?
-   - Any gaps or inconsistencies?
+   - Vendor/distributor/aggregator roles when operator experience is required: score 20-30.
+   - "High-level frameworks only" or inability to share specifics: score 30-40.
+   - NDA-heavy or evasive conflict answers: score 25-35.
+   - Clean, transparent, no-conflict answers with concrete examples: score 80-100.
 
-RECOMMENDATION LEVELS:
-- "strong_fit": Overall score >= 75 and no critical red flags
-- "maybe": Overall score 50-74 OR missing key information
-- "low_fit": Overall score < 50 OR critical red flags
+GRADE THRESHOLDS (be strict):
+- "strong": score >= 80 — reserve for experts who are EXACTLY what the rubric demands
+- "mixed": score 45-79 — decent but missing key criteria or in a supportive rather than ownership role
+- "weak": score < 45 — wrong profile type, adjacent experience, or explicitly de-prioritized by rubric
+
+CRITICAL RULES:
+- Do NOT give everyone 75+. If all experts look similar, you are not being opinionated enough.
+- A vendor who "supported" restaurant clients is NOT the same as an operator who OWNED the P&L. Score them 30+ points apart.
+- Apply the screener rubric's "we are NOT prioritizing" criteria as hard disqualifiers (cap at 45).
+- When in doubt, score LOWER. It is better to surface 2-3 true fits than to recommend everyone.
 
 Return detailed scoring breakdown with justification."""
 
@@ -473,10 +487,26 @@ Calculate overall_score as: (background_fit_score * 0.30) + (screener_quality_sc
         Returns:
             Tuple of (result, raw_response, prompt)
         """
+        # Build screener rubric section from config
+        screener_rubric_text = ""
+        if screener_config and screener_config.get("questions"):
+            rubric_lines = []
+            for q in screener_config["questions"]:
+                q_text = q.get("text", "")
+                q_ideal = q.get("idealAnswer", "")
+                if q_text:
+                    rubric_lines.append(f"QUESTION: {q_text}")
+                    if q_ideal:
+                        rubric_lines.append(f"WHAT WE'RE LOOKING FOR: {q_ideal}")
+                    rubric_lines.append("")
+            if rubric_lines:
+                screener_rubric_text = "\n\nSCREENER RUBRIC (apply this STRICTLY — this is the client's own criteria):\n" + "\n".join(rubric_lines)
+
         user_prompt = f"""Evaluate this expert for the following project:
 
 PROJECT HYPOTHESIS/FOCUS:
 {project_hypothesis}
+{screener_rubric_text}
 
 EXPERT PROFILE:
 - Name: {expert_name}
@@ -485,23 +515,29 @@ EXPERT PROFILE:
 - Bio/Relevance: {expert_bio or 'Not provided'}
 - Screener Responses: {screener_responses or 'Not provided'}
 
+INSTRUCTIONS:
+1. Score each dimension independently using the FULL 0-100 range.
+2. If a SCREENER RUBRIC is provided above, match the expert's profile and responses against it LITERALLY.
+3. If the rubric explicitly de-prioritizes a profile type and this expert matches it, cap their screener score at 35.
+4. Produce scores that would create CLEAR differentiation across a slate of 6-10 experts.
+
 Provide your detailed scoring as a JSON object:
 {{
   "grade": "strong" | "mixed" | "weak",
   "score": 0-100,
-  "rationale": "2-3 sentence explanation covering background fit and screener assessment",
+  "rationale": "2-3 sentence explanation. Be specific about WHY this expert does or does not match the rubric criteria.",
   "confidence": "low" | "medium" | "high",
   "missingInfo": ["info1", "info2"] | null,
   "suggestedQuestions": ["question1", "question2"] | null,
   "questionScores": [{{"questionId": "q1", "score": 0-100, "notes": "..."}}] | null
 }}
 
-Calculate score as: (background_fit_score * 0.40) + (screener_quality_score * 0.40) + (red_flags_score * 0.20)
+Calculate score as: (background_fit_score * 0.35) + (screener_quality_score * 0.45) + (red_flags_score * 0.20)
 
-Grade thresholds:
-- strong: score >= 75
-- mixed: score 50-74
-- weak: score < 50"""
+Grade thresholds (be STRICT):
+- strong: score >= 80 (reserve for exact-fit experts only)
+- mixed: score 45-79
+- weak: score < 45"""
 
         response = await self.client.chat.completions.create(
             model=self.model,

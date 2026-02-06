@@ -89,7 +89,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_experts",
-            "description": "Query the expert database for a project. Returns expert profiles with screening scores.",
+            "description": "Query the expert database for a project. Returns expert profiles ranked by AI screening score (highest first).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -192,6 +192,9 @@ async def _execute_tool(
                 e for e in all_experts
                 if (e.get("aiScreeningGrade") or "").lower() == screening_grade.lower()
             ]
+
+        # Sort by screening score descending (nulls last)
+        all_experts.sort(key=lambda e: e.get("aiScreeningScore") if e.get("aiScreeningScore") is not None else -1, reverse=True)
 
         # Apply limit
         limit = arguments.get("limit", 20)
